@@ -1,0 +1,95 @@
+# remembR Application Configuration
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+camera:
+  # "auto" discovers USB webcam automatically, or specify /dev/videoX
+  device: "auto"
+  width: 1280
+  height: 720
+  frame_rate: 30
+
+hailo:
+  # Path to hailo-rpi5-examples repo
+  examples_path: "/home/jjk/hailo-rpi5-examples"
+  # Model to use (h8l variant for Hailo-8L on RPi5 AI HAT+)
+  model: "yolov8s"
+  # Architecture auto-detected from device
+  arch: "auto"
+  # NMS thresholds
+  nms_score_threshold: 0.3
+  nms_iou_threshold: 0.45
+  batch_size: 2
+
+detection:
+  confidence_threshold: 0.45
+  # Labels we care about for the missing-object use case
+  allowed_labels:
+    - "bottle"
+    - "cup"
+    - "cell phone"
+    - "backpack"
+    - "remote"
+    - "book"
+    - "keyboard"
+    - "mouse"
+    - "handbag"
+    - "laptop"
+    - "umbrella"
+    - "scissors"
+    - "clock"
+    - "tv"
+    - "chair"
+    - "bowl"
+    - "vase"
+  # Per-label confidence overrides
+  label_thresholds:
+    cell phone: 0.55
+    bottle: 0.45
+    cup: 0.50
+    remote: 0.50
+  # Debounce: object must appear in min_hits/window frames to be confirmed
+  debounce_window: 5
+  debounce_min_hits: 3
+  # Min bounding box area ratio (fraction of frame area)
+  min_bbox_area_ratio: 0.015
+
+memory:
+  store_path: "data/memory_store.json"
+  max_objects: 500
+  max_history_per_object: 50
+  persist_interval_seconds: 30
+  # How long until an object is considered "stale" (seconds)
+  stale_threshold_seconds: 300
+  # How long to keep objects in memory (seconds)
+  expiry_seconds: 86400
+
+snapshots:
+  directory: "data/snapshots"
+  max_count: 200
+  max_age_hours: 24
+  jpeg_quality: 85
+
+regions:
+  # Grid-based region mapping
+  # Frame is divided into a 3x3 grid for human-readable labels
+  columns: 3
+  rows: 3
+  labels:
+    top_left: "upper-left area"
+    top_center: "upper-center area"
+    top_right: "upper-right area"
+    middle_left: "left side"
+    middle_center: "center area"
+    middle_right: "right side"
+    bottom_left: "lower-left area"
+    bottom_center: "lower-center area"
+    bottom_right: "lower-right area"
+
+logging:
+  level: "INFO"
+  file: "data/logs/remembr.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 3

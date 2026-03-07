@@ -1,0 +1,58 @@
+# Label aliases for fuzzy matching in missing-object queries
+# Maps user-friendly names to COCO detection labels
+
+aliases:
+  # Phone variants
+  phone: "cell phone"
+  cellphone: "cell phone"
+  mobile: "cell phone"
+  smartphone: "cell phone"
+  iphone: "cell phone"
+  android: "cell phone"
+
+  # Bag variants
+  bag: "backpack"
+  purse: "handbag"
+  satchel: "backpack"
+  rucksack: "backpack"
+
+  # Wallet - COCO has no wallet class; handbag is closest
+  wallet: "handbag"
+  billfold: "handbag"
+
+  # Cup/mug
+  mug: "cup"
+  glass: "cup"
+  tumbler: "cup"
+  coffee: "cup"
+
+  # Remote
+  controller: "remote"
+  "tv remote": "remote"
+  clicker: "remote"
+
+  # Bottle
+  "water bottle": "bottle"
+  flask: "bottle"
+  thermos: "bottle"
+
+  # Misc
+  monitor: "tv"
+  screen: "tv"
+  display: "tv"
+  shears: "scissors"
+  watch: "clock"
+  timer: "clock"
+
+# Snapshot-priority labels: these trigger automatic snapshots
+snapshot_labels:
+  - "cell phone"
+  - "remote"
+  - "handbag"
+  - "backpack"
+  - "bottle"
+  - "cup"
+  - "book"
+  - "laptop"
+  - "scissors"
+  - "keyboard"
