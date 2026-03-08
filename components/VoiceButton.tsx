@@ -107,6 +107,14 @@ export default function VoiceButton() {
 
       const data = await res.json();
 
+      if (data._debug) {
+        console.error("[voice _debug]", data._debug);
+        setResponse("Error: " + data._debug);
+        clearResponseAfterDelay(12000);
+        setState("idle");
+        return;
+      }
+
       if (data.spokenResponse) {
         setResponse(data.spokenResponse);
         speak(data.spokenResponse);

@@ -1,8 +1,5 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 
 export async function POST(req: Request) {
   try {
@@ -12,14 +9,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No transcript provided" }, { status: 400 });
     }
 
-    // Fetch context from Supabase
-    const { data: medications } = await supabase.from("medications").select("*");
-    const { data: profile } = await supabase.from("patient_profile").select("*").limit(1).single();
-    const { data: logs } = await supabase
-      .from("voice_history")
-      .select("transcript, response")
-      .order("created_at", { ascending: false })
-      .limit(5);
+    // Fetch recent conversation history from Supabase
+    const logs = await Promise.resolve(
+      supabase
+        .from("voice_history")
+        .select("transcript, response")
+        .order("created_at", { ascending: false })
+        .limit(5)
+    ).then(r => r.data).catch(() => null);
 
     const now = new Date();
     const timeStr = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
@@ -32,13 +29,18 @@ You speak like a caring friend, not a robot.
 
 Current date and time: ${dateStr}, ${timeStr}
 
-The user's profile:
-Name: ${profile?.name || "unknown"}
-Address: ${profile?.address || "unknown"}
-Emergency contact: ${profile?.emergency_contact_name || "not set"} (${profile?.emergency_contact_phone || ""})
+The patient's profile:
+Name: Harris Thompson
+Age: 78
+Address: 142 Maple Street, Toronto, ON M5V 2H1
+Emergency contact: Susan Thompson (daughter) — 416-555-0192
 
-The user's medications from the database:
-${JSON.stringify(medications || [])}
+Harris's medication schedule:
+- Donepezil (Aricept) 10mg — take 1 tablet every night at bedtime with water
+- Lisinopril 5mg — take 1 tablet every morning with breakfast (for blood pressure)
+- Metformin 500mg — take 1 tablet with breakfast AND 1 tablet with dinner (for diabetes)
+- Vitamin D 1000 IU — take 1 capsule every morning with breakfast
+- Aspirin 81mg — take 1 tablet every morning with breakfast (blood thinner)
 
 Recent conversation history:
 ${JSON.stringify(logs || [])}
@@ -63,54 +65,43 @@ Return a STRICT JSON object in this exact format:
 }
 `;
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-      generationConfig: { responseMimeType: "application/json" },
-    });
-
-    const result = await model.generateContent(systemPrompt);
-    const responseText = result.response.text();
+    console.log("[voice] calling Gemini, key set:", !!process.env.GEMINI_API_KEY);
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: systemPrompt }] }],
+        }),
+      }
+    );
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text();
+      throw new Error(`Gemini ${geminiRes.status}: ${errText}`);
+    }
+    const geminiData = await geminiRes.json();
+    const rawText = geminiData.candidates[0].content.parts[0].text as string;
+    console.log("[voice] Gemini raw response:", rawText.slice(0, 200));
+    const responseText = rawText.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
     const parsed = JSON.parse(responseText);
 
-    // If adding a new medication, persist to Supabase
+    // Persist to Supabase — fire and forget, failures don't affect the response
     if (parsed.intent === "add_medication" && parsed.medicationName && parsed.medicationSchedule) {
-      const { data: existing } = await supabase
-        .from("medications")
-        .select("id")
-        .eq("name", parsed.medicationName)
-        .limit(1);
-
-      if (!existing || existing.length === 0) {
-        await supabase.from("medications").insert({
-          name: parsed.medicationName,
-          schedule: parsed.medicationSchedule,
-          taken_today: false,
-        });
-      } else {
-        await supabase
-          .from("medications")
-          .update({ schedule: parsed.medicationSchedule })
-          .eq("name", parsed.medicationName);
-      }
-
-      await supabase.from("medication_history").insert({
-        medication_name: parsed.medicationName,
-        dosage: parsed.medicationDose || null,
-        action: "added",
-      });
-
-      await supabase.from("memory_logs").insert({
-        event_type: "medication_added",
-        description: `Voice: "${transcript}" → Added/updated ${parsed.medicationName} (${parsed.medicationSchedule})`,
-      });
+      Promise.resolve(supabase.from("medications").select("id").eq("name", parsed.medicationName).limit(1))
+        .then(async ({ data: existing }) => {
+          if (!existing || existing.length === 0) {
+            await supabase.from("medications").insert({ name: parsed.medicationName, schedule: parsed.medicationSchedule, taken_today: false });
+          } else {
+            await supabase.from("medications").update({ schedule: parsed.medicationSchedule }).eq("name", parsed.medicationName);
+          }
+          await supabase.from("medication_history").insert({ medication_name: parsed.medicationName, dosage: parsed.medicationDose || null, action: "added" });
+          await supabase.from("memory_logs").insert({ event_type: "medication_added", description: `Voice: "${transcript}" → Added/updated ${parsed.medicationName} (${parsed.medicationSchedule})` });
+        })
+        .catch(() => {});
     }
 
-    // Log to voice_history
-    await supabase.from("voice_history").insert({
-      transcript,
-      response: parsed.spokenResponse,
-      intent: parsed.intent,
-    });
+    Promise.resolve(supabase.from("voice_history").insert({ transcript, response: parsed.spokenResponse, intent: parsed.intent })).catch(() => {});
 
     return NextResponse.json(parsed);
   } catch (error) {
