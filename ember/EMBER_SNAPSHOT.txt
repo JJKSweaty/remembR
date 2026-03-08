@@ -1,0 +1,1866 @@
+This is the full source code for Ember — a Next.js 14 dementia companion app.
+Stack: Next.js 14 App Router, TypeScript, Tailwind CSS v4, Gemini 1.5 Flash, Web Speech API.
+Pages: Home (/), Find My Things (/find), Medication (/meds), Chat with Ember (/chat), Caregiver Report (/summary), I am Confused (/confused), My Day (/day).
+AI: 3 server-side Gemini API routes. Memory: localStorage via lib/memory.ts.
+
+============================================================
+
+FILE: app/layout.tsx
+----------------------------------------
+```tsx
+import type { Metadata, Viewport } from "next";
+import { Cormorant_Garamond, DM_Sans } from "next/font/google";
+import "./globals.css";
+
+const cormorant = Cormorant_Garamond({
+  variable: "--font-cormorant",
+  subsets: ["latin"],
+  weight: ["300", "400", "500"],
+  style: ["normal", "italic"],
+});
+
+const dmSans = DM_Sans({
+  variable: "--font-dm-sans",
+  subsets: ["latin"],
+  weight: ["300", "400", "500"],
+});
+
+export const metadata: Metadata = {
+  title: "Ember",
+  description: "Your caring companion",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body className={`${cormorant.variable} ${dmSans.variable}`}>
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+
+FILE: app/globals.css
+----------------------------------------
+```css
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
+  background: linear-gradient(170deg, #fdf8f0 0%, #faf0e4 35%, #f8ece4 65%, #f5e8e0 100%);
+  min-height: 100vh;
+  min-height: 100svh;
+}
+
+@keyframes orb-idle {
+  0%,100% { transform: scale(1); filter: blur(32px); }
+  33%      { transform: scale(1.08) translateY(-6px); filter: blur(36px); }
+  66%      { transform: scale(0.96) translateY(4px); filter: blur(30px); }
+}
+@keyframes orb-pulse {
+  0%,100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(1.18); opacity: 0.8; }
+}
+@keyframes orb-celebrate {
+  0%   { transform: scale(1);    }
+  20%  { transform: scale(1.25); }
+  40%  { transform: scale(0.95); }
+  60%  { transform: scale(1.15); }
+  80%  { transform: scale(0.98); }
+  100% { transform: scale(1);    }
+}
+@keyframes orb-breathe {
+  0%,100% { transform: scale(1) translateY(0); }
+  50%      { transform: scale(1.12) translateY(-10px); }
+}
+@keyframes orb-scan {
+  0%,100% { border-radius: 60% 40% 55% 45% / 50% 60% 40% 50%; }
+  33%      { border-radius: 45% 55% 40% 60% / 60% 40% 60% 40%; }
+  66%      { border-radius: 55% 45% 60% 40% / 40% 55% 45% 55%; }
+}
+@keyframes ring-out {
+  0%   { transform: scale(0.5); opacity: 0.5; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(30px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes checkmark {
+  0%   { transform: scale(0) rotate(-15deg); }
+  60%  { transform: scale(1.2) rotate(5deg); }
+  100% { transform: scale(1) rotate(0); }
+}
+@keyframes breatheRing {
+  0%,100% { transform: scale(1); opacity: 0.4; }
+  50%      { transform: scale(1.2); opacity: 0.15; }
+}
+```
+
+FILE: app/page.tsx
+----------------------------------------
+```tsx
+"use client";
+
+import { useRouter } from "next/navigation";
+import Orb from "@/components/Orb";
+import PageWrapper from "@/components/PageWrapper";
+
+export default function Home() {
+  const router = useRouter();
+  const h = new Date().getHours();
+  const greeting = h < 5 ? "Still up, Margaret?" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  const day  = new Date().toLocaleDateString("en-US", { weekday: "long" });
+  const date = new Date().toLocaleDateString("en-US", { day: "numeric", month: "long" });
+
+  const cards = [
+    { id: "find",     title: "Find my things",  sub: "Lost something? I'll help." },
+    { id: "meds",     title: "My medication",   sub: "Today's medicines." },
+    { id: "confused", title: "I'm confused",    sub: "Let's figure it out." },
+    { id: "day",      title: "My day",          sub: "What's happening today." },
+  ];
+
+  return (
+    <PageWrapper>
+      <div style={{ padding: "0 28px 120px", animation: "fadeUp 0.35s ease both" }}>
+        {/* Greeting */}
+        <div style={{ animation: "fadeUp 0.6s ease both", marginBottom: 8 }}>
+          <p style={{
+            fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+            fontSize: 13, color: "rgba(60,40,20,0.4)", fontWeight: 300,
+            marginBottom: 6, letterSpacing: "0.02em",
+          }}>
+            {greeting} —
+          </p>
+          <h1 style={{
+            fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+            fontSize: 44, fontWeight: 300, lineHeight: 1.05,
+            color: "#2a1a08", letterSpacing: "-0.5px",
+          }}>
+            {day}<br />
+            <span style={{ fontStyle: "italic", color: "#c87840" }}>{date}</span>
+          </h1>
+        </div>
+
+        {/* Orb */}
+        <div style={{ display: "flex", justifyContent: "center", margin: "36px 0 40px", animation: "fadeIn 1s ease 0.2s both" }}>
+          <Orb mood="idle" size={140} />
+        </div>
+
+        {/* Cards */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, animation: "fadeUp 0.6s ease 0.3s both" }}>
+          {cards.map((c, i) => (
+            <button
+              key={c.id}
+              onClick={() => router.push(`/${c.id}`)}
+              style={{
+                background: "rgba(255,248,236,0.7)",
+                border: "1px solid rgba(200,160,100,0.15)",
+                borderRadius: 20,
+                padding: "20px 24px",
+                textAlign: "left",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                boxShadow: "0 1px 0 rgba(255,255,255,0.9) inset",
+                transition: "all 0.18s",
+                animation: `fadeUp 0.5s ease ${0.3 + i * 0.07}s both`,
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.background = "rgba(255,240,220,0.9)";
+                e.currentTarget.style.transform = "translateX(3px)";
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.background = "rgba(255,248,236,0.7)";
+                e.currentTarget.style.transform = "";
+              }}
+            >
+              <div>
+                <div style={{
+                  fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+                  fontSize: 22, fontWeight: 400, color: "#2a1a08", marginBottom: 3,
+                }}>
+                  {c.title}
+                </div>
+                <div style={{ fontSize: 12, color: "rgba(60,40,20,0.45)", fontWeight: 300 }}>{c.sub}</div>
+              </div>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(200,120,64,0.5)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+            </button>
+          ))}
+        </div>
+      </div>
+    </PageWrapper>
+  );
+}
+```
+
+FILE: components/Orb.tsx
+----------------------------------------
+```tsx
+"use client";
+
+type OrbMood = "idle" | "scanning" | "found" | "concerned" | "happy" | "calm";
+
+interface OrbProps {
+  mood?: OrbMood;
+  size?: number;
+}
+
+const configs: Record<OrbMood, { c1: string; c2: string; c3: string; anim: string; shape: string }> = {
+  idle: {
+    c1: "#f5c084", c2: "#e8956e", c3: "#f0d4a0",
+    anim: "orb-idle 5s ease-in-out infinite",
+    shape: "60% 40% 55% 45% / 50% 60% 40% 50%",
+  },
+  scanning: {
+    c1: "#e8c070", c2: "#d4784a", c3: "#f5d890",
+    anim: "orb-scan 3s ease-in-out infinite",
+    shape: "50% 50% 50% 50%",
+  },
+  found: {
+    c1: "#a8d4a0", c2: "#70b868", c3: "#c8ecca",
+    anim: "orb-celebrate 0.8s ease both",
+    shape: "55% 45% 50% 50% / 45% 55% 50% 50%",
+  },
+  concerned: {
+    c1: "#b8cce8", c2: "#7898c4", c3: "#d4e4f4",
+    anim: "orb-breathe 4s ease-in-out infinite",
+    shape: "50% 50% 55% 45% / 55% 50% 50% 55%",
+  },
+  happy: {
+    c1: "#f5d070", c2: "#e89840", c3: "#fce8a0",
+    anim: "orb-celebrate 0.6s ease both, orb-idle 5s ease-in-out 0.6s infinite",
+    shape: "55% 45% 50% 50% / 45% 55% 50% 50%",
+  },
+  calm: {
+    c1: "#c8a8e0", c2: "#9870c0", c3: "#e0c8f4",
+    anim: "orb-breathe 6s ease-in-out infinite",
+    shape: "50% 50% 50% 50%",
+  },
+};
+
+export default function Orb({ mood = "idle", size = 160 }: OrbProps) {
+  const cfg = configs[mood] ?? configs.idle;
+
+  return (
+    <div style={{ position: "relative", width: size, height: size, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      {/* Outer glow */}
+      <div style={{
+        position: "absolute",
+        inset: -size * 0.2,
+        background: `radial-gradient(circle, ${cfg.c1}44 0%, transparent 70%)`,
+        borderRadius: "50%",
+        animation: "orb-idle 5s ease-in-out infinite",
+        animationDelay: "0.3s",
+      }} />
+
+      {/* Scanning rings */}
+      {mood === "scanning" && [0, 1, 2].map(i => (
+        <div key={i} style={{
+          position: "absolute",
+          inset: 0,
+          borderRadius: "50%",
+          border: `1.5px solid ${cfg.c1}60`,
+          animation: `ring-out 2.5s ease-out ${i * 0.7}s infinite`,
+        }} />
+      ))}
+
+      {/* Core orb */}
+      <div style={{
+        width: size,
+        height: size,
+        background: `radial-gradient(ellipse at 35% 35%, ${cfg.c3} 0%, ${cfg.c1} 45%, ${cfg.c2} 100%)`,
+        borderRadius: cfg.shape,
+        animation: cfg.anim,
+        boxShadow: `0 0 ${size * 0.4}px ${cfg.c1}60, 0 0 ${size * 0.2}px ${cfg.c2}30`,
+        position: "relative",
+        zIndex: 2,
+        transition: "background 1s ease, box-shadow 1s ease",
+      }} />
+    </div>
+  );
+}
+```
+
+FILE: components/Nav.tsx
+----------------------------------------
+```tsx
+"use client";
+
+import { useRouter, usePathname } from "next/navigation";
+
+const tabs = [
+  {
+    id: "home",
+    label: "Home",
+    href: "/",
+    path: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10",
+  },
+  {
+    id: "find",
+    label: "Find",
+    href: "/find",
+    path: "M 3 11 a 8 8 0 1 0 16 0 a 8 8 0 0 0 -16 0 M21 21l-4.35-4.35",
+  },
+  {
+    id: "meds",
+    label: "Meds",
+    href: "/meds",
+    path: "M12 5v14 M5 12h14",
+  },
+  {
+    id: "chat",
+    label: "Chat",
+    href: "/chat",
+    path: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z",
+  },
+  {
+    id: "summary",
+    label: "Report",
+    href: "/summary",
+    path: "M9 12h6 M9 8h6 M9 16h4 M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z",
+  },
+];
+
+function pathnameToId(pathname: string): string {
+  if (pathname === "/") return "home";
+  if (pathname === "/find") return "find";
+  if (pathname === "/meds") return "meds";
+  if (pathname === "/confused") return "confused";
+  if (pathname === "/chat") return "chat";
+  if (pathname === "/summary") return "summary";
+  return "home";
+}
+
+export default function Nav() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const activeId = pathnameToId(pathname);
+
+  return (
+    <div style={{
+      position: "fixed",
+      bottom: 0,
+      left: "50%",
+      transform: "translateX(-50%)",
+      width: "100%",
+      maxWidth: 430,
+      background: "rgba(254,250,244,0.94)",
+      backdropFilter: "blur(24px)",
+      WebkitBackdropFilter: "blur(24px)",
+      borderTop: "1px solid rgba(200,160,100,0.12)",
+      display: "flex",
+      justifyContent: "space-around",
+      alignItems: "flex-start",
+      padding: "14px 0 24px",
+      zIndex: 200,
+    }}>
+      {tabs.map(t => {
+        const active = activeId === t.id;
+        return (
+          <button
+            key={t.id}
+            onClick={() => router.push(t.href)}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 5,
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "4px 12px",
+              color: active ? "#c87840" : "rgba(60,40,20,0.3)",
+              transition: "color 0.2s",
+            }}
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={active ? 2 : 1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              {t.path.split(" M").map((p, i) => (
+                <path key={i} d={i === 0 ? p : "M" + p} />
+              ))}
+            </svg>
+            <span style={{
+              fontSize: 10,
+              fontWeight: active ? 600 : 400,
+              letterSpacing: "0.04em",
+              fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+            }}>
+              {t.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+```
+
+FILE: components/PageWrapper.tsx
+----------------------------------------
+```tsx
+"use client";
+
+import Nav from "@/components/Nav";
+
+interface PageWrapperProps {
+  children: React.ReactNode;
+}
+
+export default function PageWrapper({ children }: PageWrapperProps) {
+  const time = new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      display: "flex",
+      justifyContent: "center",
+      fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+      position: "relative",
+    }}>
+      {/* Grain overlay */}
+      <div style={{
+        position: "fixed",
+        inset: 0,
+        pointerEvents: "none",
+        zIndex: 0,
+        opacity: 0.4,
+        backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E")`,
+      }} />
+
+      <div style={{ width: "100%", maxWidth: 430, position: "relative", zIndex: 1 }}>
+        {/* Status bar */}
+        <div style={{
+          height: 52,
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          padding: "0 28px 10px",
+        }}>
+          <span style={{ fontSize: 14, fontWeight: 400, color: "rgba(60,40,20,0.4)" }}>
+            {time}
+          </span>
+          <span style={{
+            fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+            fontSize: 16,
+            fontStyle: "italic",
+            color: "#c87840",
+            letterSpacing: "0.02em",
+          }}>
+            ember
+          </span>
+        </div>
+
+        {/* Page content */}
+        {children}
+
+        <Nav />
+      </div>
+    </div>
+  );
+}
+```
+
+FILE: lib/memory.ts
+----------------------------------------
+```ts
+// ── Types ────────────────────────────────────────────────────────────────────
+
+export interface ItemLocation {
+  location: string;
+  date: string;
+}
+
+export interface MedLog {
+  date: string;
+  name: string;
+  dose: string;
+  taken: boolean;
+  time: string;
+}
+
+export interface ChatEntry {
+  role: "user" | "model";
+  content: string;
+  timestamp: string;
+}
+
+export interface ConfusedEpisode {
+  date: string;
+  time: string;
+  resolved: boolean;
+}
+
+export interface MealLog {
+  meal: string;
+  time: string;
+  date: string;
+}
+
+export interface MemoryStore {
+  lastSeenItems: Record<string, ItemLocation>;
+  medicationHistory: MedLog[];
+  chatHistory: ChatEntry[];
+  routinePatterns: {
+    wakeTime?: string;
+    sleepTime?: string;
+    mealsLogged: MealLog[];
+  };
+  confusedEpisodes: ConfusedEpisode[];
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+const KEY = "ember_memory";
+
+function loadStore(): MemoryStore {
+  if (typeof window === "undefined") return emptyStore();
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return emptyStore();
+    return JSON.parse(raw) as MemoryStore;
+  } catch {
+    return emptyStore();
+  }
+}
+
+function emptyStore(): MemoryStore {
+  return {
+    lastSeenItems: {},
+    medicationHistory: [],
+    chatHistory: [],
+    routinePatterns: { mealsLogged: [] },
+    confusedEpisodes: [],
+  };
+}
+
+function saveStore(store: MemoryStore): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(KEY, JSON.stringify(store));
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+export function saveMemory<K extends keyof MemoryStore>(key: K, value: MemoryStore[K]): void {
+  const store = loadStore();
+  store[key] = value;
+  saveStore(store);
+}
+
+export function getMemory<K extends keyof MemoryStore>(key: K): MemoryStore[K] {
+  return loadStore()[key];
+}
+
+export function logItemFound(itemName: string, location: string): void {
+  const store = loadStore();
+  store.lastSeenItems[itemName.toLowerCase()] = {
+    location,
+    date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric" }),
+  };
+  saveStore(store);
+}
+
+export function logMedication(entry: Omit<MedLog, "date">): void {
+  const store = loadStore();
+  store.medicationHistory.push({
+    ...entry,
+    date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric" }),
+  });
+  // Keep last 30 entries
+  if (store.medicationHistory.length > 30) {
+    store.medicationHistory = store.medicationHistory.slice(-30);
+  }
+  saveStore(store);
+}
+
+export function logChatMessage(entry: Omit<ChatEntry, "timestamp">): void {
+  const store = loadStore();
+  store.chatHistory.push({ ...entry, timestamp: new Date().toISOString() });
+  // Keep last 50 messages
+  if (store.chatHistory.length > 50) {
+    store.chatHistory = store.chatHistory.slice(-50);
+  }
+  saveStore(store);
+}
+
+export function logConfusedEpisode(): void {
+  const store = loadStore();
+  store.confusedEpisodes.push({
+    date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric" }),
+    time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+    resolved: false,
+  });
+  saveStore(store);
+}
+
+export function resolveLastConfusedEpisode(): void {
+  const store = loadStore();
+  const last = store.confusedEpisodes.findLast(e => !e.resolved);
+  if (last) last.resolved = true;
+  saveStore(store);
+}
+
+export function getFullContext(): string {
+  const store = loadStore();
+  const parts: string[] = [];
+
+  // Routine
+  if (store.routinePatterns.wakeTime) {
+    parts.push(`Margaret usually wakes around ${store.routinePatterns.wakeTime}.`);
+  }
+
+  // Today's meds
+  const today = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric" });
+  const todayMeds = store.medicationHistory.filter(m => m.date === today);
+  if (todayMeds.length > 0) {
+    const takenToday = todayMeds.filter(m => m.taken).map(m => m.name);
+    const notTaken = todayMeds.filter(m => !m.taken).map(m => m.name);
+    if (takenToday.length > 0) parts.push(`She took ${takenToday.join(", ")} today.`);
+    if (notTaken.length > 0) parts.push(`She has not yet taken ${notTaken.join(", ")}.`);
+  }
+
+  // Item locations
+  const items = Object.entries(store.lastSeenItems);
+  if (items.length > 0) {
+    const recent = items.slice(-3);
+    for (const [item, data] of recent) {
+      parts.push(`She last found her ${item} at ${data.location} on ${data.date}.`);
+    }
+  }
+
+  // Confused episodes
+  const recentConfused = store.confusedEpisodes.filter(e => e.date === today);
+  if (recentConfused.length > 0) {
+    parts.push(`She had ${recentConfused.length} confused episode${recentConfused.length > 1 ? "s" : ""} today.`);
+  } else {
+    const yesterday = store.confusedEpisodes.slice(-3);
+    if (yesterday.length > 0) {
+      const last = yesterday[yesterday.length - 1];
+      parts.push(`She had a confused episode at ${last.time} on ${last.date}.`);
+    }
+  }
+
+  if (parts.length === 0) return "No activity recorded yet today.";
+  return parts.join(" ");
+}
+```
+
+FILE: app/api/chat/route.ts
+----------------------------------------
+```ts
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { NextRequest, NextResponse } from "next/server";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+
+const SYSTEM_PROMPT = `You are Ember, a warm and gentle AI companion for Margaret, a person living with dementia. You speak in short, clear, calm sentences. You never use jargon. You are patient, kind, and reassuring. You remember context from earlier in the conversation. If Margaret seems confused, gently orient her by reminding her of the date, time, and that she is safe at home. Never say you are an AI — just be Ember, her friend.`;
+
+export async function POST(req: NextRequest) {
+  try {
+    const { messages, context } = await req.json() as {
+      messages: { role: string; content: string }[];
+      context?: string;
+    };
+
+    const systemWithContext = context
+      ? `${SYSTEM_PROMPT}\n\nContext about Margaret today: ${context}`
+      : SYSTEM_PROMPT;
+
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      systemInstruction: systemWithContext,
+    });
+
+    // Convert message history for Gemini (exclude the last user message — it's the prompt)
+    const history = messages.slice(0, -1).map(m => ({
+      role: m.role === "user" ? "user" : "model",
+      parts: [{ text: m.content }],
+    }));
+
+    const chat = model.startChat({ history });
+
+    const lastMessage = messages[messages.length - 1];
+    const result = await chat.sendMessage(lastMessage.content);
+    const reply = result.response.text();
+
+    return NextResponse.json({ reply });
+  } catch (err) {
+    console.error("Gemini chat error:", err);
+    return NextResponse.json(
+      { reply: "I'm here, Margaret. Give me just a moment." },
+      { status: 200 }
+    );
+  }
+}
+```
+
+FILE: app/api/meds-ai/route.ts
+----------------------------------------
+```ts
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { NextRequest, NextResponse } from "next/server";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+
+export async function POST(req: NextRequest) {
+  try {
+    const { meds, context } = await req.json() as {
+      meds: { name: string; dose: string; time: string; taken: boolean }[];
+      context?: string;
+    };
+
+    const taken = meds.filter(m => m.taken).map(m => `${m.name} ${m.dose} at ${m.time}`);
+    const pending = meds.filter(m => !m.taken).map(m => `${m.name} ${m.dose} at ${m.time}`);
+
+    const prompt = `You are Ember, a warm and gentle companion for Margaret, who has dementia. Write a single short, warm, encouraging message about her medicines today. Speak directly to Margaret in a calm and friendly tone. Keep it to 1-2 sentences.
+
+Medicines taken today: ${taken.length > 0 ? taken.join(", ") : "none yet"}.
+Medicines still to take: ${pending.length > 0 ? pending.join(", ") : "none — all done!"}.
+${context ? `Context: ${context}` : ""}
+
+Respond with only the message, no quotes, no extra text.`;
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const result = await model.generateContent(prompt);
+    const message = result.response.text().trim();
+
+    return NextResponse.json({ message });
+  } catch (err) {
+    console.error("Meds AI error:", err);
+    // Warm fallback
+    return NextResponse.json({
+      message: "Good to see you, Margaret. Let's check your medicines for today.",
+    });
+  }
+}
+```
+
+FILE: app/api/summary/route.ts
+----------------------------------------
+```ts
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { NextRequest, NextResponse } from "next/server";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+
+export async function POST(req: NextRequest) {
+  try {
+    const { context } = await req.json() as { context: string };
+
+    const today = new Date().toLocaleDateString("en-US", {
+      weekday: "long", month: "long", day: "numeric",
+    });
+
+    const prompt = `You are writing a daily caregiver report for Margaret's family and care team. Today is ${today}.
+
+Here is what happened today:
+${context}
+
+Write a warm, readable paragraph summary of Margaret's day — the kind a caring nurse would write. Mention medications taken or missed, any items she looked for, any moments of confusion and how they resolved, and her general wellbeing. Keep it to 3-5 sentences. Be warm and specific. Use plain language. Do not use bullet points.
+
+Respond with only the paragraph, no heading, no quotes.`;
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const result = await model.generateContent(prompt);
+    const summary = result.response.text().trim();
+
+    return NextResponse.json({ summary });
+  } catch (err) {
+    console.error("Summary error:", err);
+    return NextResponse.json({
+      summary: "Margaret had a gentle day today. We were unable to generate a full report at this time — please check back shortly.",
+    });
+  }
+}
+```
+
+FILE: app/chat/page.tsx
+----------------------------------------
+```tsx
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import Orb from "@/components/Orb";
+import Nav from "@/components/Nav";
+import { getFullContext, logChatMessage } from "@/lib/memory";
+
+type OrbMood = "idle" | "scanning" | "happy";
+
+interface Message {
+  role: "user" | "model";
+  content: string;
+}
+
+// SpeechRecognition types for browsers
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+}
+interface SpeechRecognitionInstance extends EventTarget {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  start(): void;
+  stop(): void;
+  onresult: ((e: SpeechRecognitionEvent) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+}
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognitionInstance;
+    webkitSpeechRecognition?: new () => SpeechRecognitionInstance;
+  }
+}
+
+export default function Chat() {
+  const [messages, setMessages] = useState<Message[]>([
+    { role: "model", content: "Hello Margaret. I'm right here. How are you feeling today?" },
+  ]);
+  const [input, setInput] = useState("");
+  const [orbMood, setOrbMood] = useState<OrbMood>("idle");
+  const [isListening, setIsListening] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+
+  // Auto-scroll on new messages
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // Speak a message aloud
+  const speak = (text: string) => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.rate = 0.88;
+    utt.pitch = 1.05;
+    // Prefer a female voice if available
+    const voices = window.speechSynthesis.getVoices();
+    const femaleVoice = voices.find(v =>
+      v.name.includes("Female") || v.name.includes("Samantha") ||
+      v.name.includes("Karen") || v.name.includes("Moira") ||
+      (v.lang.startsWith("en") && v.name.toLowerCase().includes("female"))
+    );
+    if (femaleVoice) utt.voice = femaleVoice;
+    window.speechSynthesis.speak(utt);
+  };
+
+  // Send a message to Gemini
+  const sendMessage = async (text: string) => {
+    if (!text.trim() || isThinking) return;
+
+    const userMsg: Message = { role: "user", content: text.trim() };
+    const updated = [...messages, userMsg];
+    setMessages(updated);
+    setInput("");
+    setOrbMood("scanning");
+    setIsThinking(true);
+    logChatMessage({ role: "user", content: text.trim() });
+
+    try {
+      const context = getFullContext();
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: updated, context }),
+      });
+      const data = await res.json() as { reply: string };
+      const reply = data.reply;
+
+      setMessages(prev => [...prev, { role: "model", content: reply }]);
+      setOrbMood("happy");
+      logChatMessage({ role: "model", content: reply });
+      speak(reply);
+
+      setTimeout(() => setOrbMood("idle"), 2000);
+    } catch {
+      const fallback = "I'm here, Margaret. Give me just a moment.";
+      setMessages(prev => [...prev, { role: "model", content: fallback }]);
+      setOrbMood("idle");
+      speak(fallback);
+    } finally {
+      setIsThinking(false);
+    }
+  };
+
+  // Voice input
+  const toggleMic = () => {
+    const SR = window.SpeechRecognition ?? window.webkitSpeechRecognition;
+    if (!SR) return;
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      setOrbMood("idle");
+      return;
+    }
+
+    const rec = new SR();
+    rec.lang = "en-US";
+    rec.interimResults = false;
+    rec.continuous = false;
+
+    rec.onresult = (e: SpeechRecognitionEvent) => {
+      const transcript = e.results[0][0].transcript;
+      setInput(transcript);
+      setIsListening(false);
+      setOrbMood("idle");
+      sendMessage(transcript);
+    };
+    rec.onerror = () => { setIsListening(false); setOrbMood("idle"); };
+    rec.onend = () => { setIsListening(false); };
+
+    rec.start();
+    recognitionRef.current = rec;
+    setIsListening(true);
+    setOrbMood("scanning");
+  };
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage(input);
+    }
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(170deg, #fdf8f0 0%, #faf0e4 35%, #f8ece4 65%, #f5e8e0 100%)",
+      display: "flex",
+      justifyContent: "center",
+      fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+    }}>
+      <div style={{ width: "100%", maxWidth: 430, display: "flex", flexDirection: "column", height: "100vh" }}>
+
+        {/* Header */}
+        <div style={{
+          padding: "52px 28px 0",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 4,
+          flexShrink: 0,
+        }}>
+          <Orb mood={orbMood} size={isThinking ? 90 : 80} />
+          <p style={{
+            fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+            fontSize: 13,
+            fontStyle: "italic",
+            color: "rgba(60,40,20,0.4)",
+            marginTop: 6,
+          }}>
+            {isListening ? "Listening…" : isThinking ? "Ember is thinking…" : "Ember"}
+          </p>
+        </div>
+
+        {/* Messages */}
+        <div style={{
+          flex: 1,
+          overflowY: "auto",
+          padding: "24px 20px 16px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}>
+          {messages.map((msg, i) => (
+            <div
+              key={i}
+              style={{
+                display: "flex",
+                justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
+                animation: "fadeUp 0.3s ease both",
+              }}
+            >
+              <div style={{
+                maxWidth: "78%",
+                padding: "12px 16px",
+                borderRadius: msg.role === "user"
+                  ? "20px 20px 4px 20px"
+                  : "20px 20px 20px 4px",
+                background: msg.role === "user"
+                  ? "linear-gradient(135deg, #f5c084, #e8956e)"
+                  : "rgba(255,252,248,0.95)",
+                color: msg.role === "user" ? "white" : "#2a1a08",
+                fontSize: 15,
+                lineHeight: 1.55,
+                fontWeight: 300,
+                boxShadow: msg.role === "user"
+                  ? "0 4px 16px rgba(200,120,64,0.22)"
+                  : "0 2px 12px rgba(120,80,40,0.08), 0 0 0 1px rgba(200,160,100,0.1)",
+              }}>
+                {msg.content}
+              </div>
+            </div>
+          ))}
+
+          {/* Typing indicator */}
+          {isThinking && (
+            <div style={{ display: "flex", justifyContent: "flex-start" }}>
+              <div style={{
+                padding: "12px 18px",
+                borderRadius: "20px 20px 20px 4px",
+                background: "rgba(255,252,248,0.95)",
+                boxShadow: "0 2px 12px rgba(120,80,40,0.08), 0 0 0 1px rgba(200,160,100,0.1)",
+                display: "flex",
+                gap: 5,
+                alignItems: "center",
+              }}>
+                {[0, 1, 2].map(i => (
+                  <div key={i} style={{
+                    width: 6, height: 6, borderRadius: "50%",
+                    background: "#c87840",
+                    opacity: 0.5,
+                    animation: `fadeUp 0.8s ease ${i * 0.2}s infinite alternate`,
+                  }} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Input bar */}
+        <div style={{
+          padding: "12px 16px 100px",
+          flexShrink: 0,
+          display: "flex",
+          gap: 10,
+          alignItems: "flex-end",
+        }}>
+          <div style={{
+            flex: 1,
+            background: "rgba(255,252,248,0.95)",
+            border: "1px solid rgba(200,160,100,0.2)",
+            borderRadius: 24,
+            padding: "12px 18px",
+            boxShadow: "0 2px 12px rgba(120,80,40,0.06)",
+          }}>
+            <textarea
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKey}
+              placeholder="Say something to Ember…"
+              rows={1}
+              style={{
+                width: "100%",
+                background: "transparent",
+                border: "none",
+                outline: "none",
+                resize: "none",
+                fontSize: 15,
+                fontWeight: 300,
+                color: "#2a1a08",
+                fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+                lineHeight: 1.5,
+              }}
+            />
+          </div>
+
+          {/* Mic button */}
+          <button
+            onClick={toggleMic}
+            style={{
+              width: 48,
+              height: 48,
+              borderRadius: "50%",
+              flexShrink: 0,
+              background: isListening
+                ? "linear-gradient(135deg, #f5c084, #c87840)"
+                : "rgba(255,252,248,0.95)",
+              border: `1px solid ${isListening ? "transparent" : "rgba(200,160,100,0.25)"}`,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: isListening
+                ? "0 4px 20px rgba(200,120,64,0.35)"
+                : "0 2px 8px rgba(120,80,40,0.06)",
+              transition: "all 0.2s",
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={isListening ? "white" : "rgba(60,40,20,0.45)"} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+          </button>
+
+          {/* Send button */}
+          <button
+            onClick={() => sendMessage(input)}
+            disabled={!input.trim() || isThinking}
+            style={{
+              width: 48,
+              height: 48,
+              borderRadius: "50%",
+              flexShrink: 0,
+              background: input.trim() && !isThinking
+                ? "linear-gradient(135deg, #f5c084, #c87840)"
+                : "rgba(200,160,100,0.1)",
+              border: "none",
+              cursor: input.trim() && !isThinking ? "pointer" : "not-allowed",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: input.trim() && !isThinking ? "0 4px 20px rgba(200,120,64,0.3)" : "none",
+              transition: "all 0.2s",
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={input.trim() && !isThinking ? "white" : "rgba(60,40,20,0.2)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <Nav />
+    </div>
+  );
+}
+```
+
+FILE: app/meds/page.tsx
+----------------------------------------
+```tsx
+"use client";
+
+import { useState, useEffect } from "react";
+import Orb from "@/components/Orb";
+import PageWrapper from "@/components/PageWrapper";
+import { logMedication, getFullContext } from "@/lib/memory";
+
+type OrbMood = "idle" | "scanning" | "happy";
+
+interface Med {
+  id: number;
+  name: string;
+  dose: string;
+  time: string;
+  taken: boolean;
+}
+
+export default function Meds() {
+  const [meds, setMeds] = useState<Med[]>([
+    { id: 1, name: "Aricept",    dose: "10mg",   time: "8:00 AM",  taken: true  },
+    { id: 2, name: "Memantine",  dose: "5mg",    time: "8:00 AM",  taken: true  },
+    { id: 3, name: "Vitamin D",  dose: "1000IU", time: "12:00 PM", taken: false },
+    { id: 4, name: "Lisinopril", dose: "5mg",    time: "6:00 PM",  taken: false },
+  ]);
+  const [flash, setFlash] = useState<number | null>(null);
+  const [aiMessage, setAiMessage] = useState<string | null>(null);
+  const [orbMood, setOrbMood] = useState<OrbMood>("scanning");
+
+  // Fetch AI reminder on mount
+  useEffect(() => {
+    const fetchReminder = async () => {
+      try {
+        const context = getFullContext();
+        const res = await fetch("/api/meds-ai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ meds, context }),
+        });
+        const data = await res.json() as { message: string };
+        setAiMessage(data.message);
+        setOrbMood("idle");
+      } catch {
+        setAiMessage("Hello Margaret. Here are your medicines for today.");
+        setOrbMood("idle");
+      }
+    };
+    fetchReminder();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const taken = meds.filter(m => m.taken).length;
+  const all = meds.length;
+  const allDone = taken === all;
+  const displayOrbMood: OrbMood = allDone ? "happy" : orbMood;
+
+  const toggle = (id: number) => {
+    const med = meds.find(m => m.id === id);
+    if (med && !med.taken) {
+      setFlash(id);
+      setTimeout(() => setFlash(null), 600);
+      logMedication({ name: med.name, dose: med.dose, time: med.time, taken: true });
+    }
+    setMeds(m => m.map(x => x.id === id ? { ...x, taken: !x.taken } : x));
+  };
+
+  return (
+    <PageWrapper>
+      <div style={{ padding: "0 28px 120px", animation: "fadeUp 0.35s ease both" }}>
+        <div style={{ animation: "fadeUp 0.5s ease both", marginBottom: 28 }}>
+          <p style={{ fontSize: 11, color: "rgba(60,40,20,0.35)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 8 }}>Today&apos;s medicines</p>
+          <h2 style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 40, fontWeight: 300, color: "#2a1a08", letterSpacing: "-0.3px", lineHeight: 1.1 }}>
+            {allDone
+              ? <>{`All done,`}<br /><em style={{ color: "#c87840" }}>Margaret</em></>
+              : <>{`My`}<br /><em style={{ color: "#c87840" }}>medication</em></>}
+          </h2>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: aiMessage ? 20 : 32 }}>
+          <Orb mood={displayOrbMood} size={100} />
+        </div>
+
+        {/* AI reminder card */}
+        {aiMessage && (
+          <div style={{
+            background: "rgba(255,248,236,0.85)",
+            border: "1px solid rgba(200,160,100,0.18)",
+            borderRadius: 18,
+            padding: "16px 20px",
+            marginBottom: 28,
+            animation: "slideUp 0.4s ease both",
+          }}>
+            <p style={{
+              fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+              fontSize: 18,
+              fontWeight: 300,
+              color: "#2a1a08",
+              lineHeight: 1.6,
+              fontStyle: "italic",
+            }}>
+              {aiMessage}
+            </p>
+          </div>
+        )}
+
+        {/* Progress */}
+        <div style={{ marginBottom: 28, animation: "fadeUp 0.5s ease 0.1s both" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ fontSize: 12, color: "rgba(60,40,20,0.4)", fontWeight: 300 }}>Progress</span>
+            <span style={{ fontSize: 12, color: "#c87840", fontWeight: 500 }}>{taken} of {all}</span>
+          </div>
+          <div style={{ height: 3, background: "rgba(200,160,100,0.12)", borderRadius: 2, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${(taken / all) * 100}%`, background: "linear-gradient(90deg, #f5c084, #c87840)", borderRadius: 2, transition: "width 0.5s ease" }} />
+          </div>
+        </div>
+
+        {/* Med list */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, animation: "fadeUp 0.5s ease 0.15s both" }}>
+          {meds.map((med, i) => (
+            <div key={med.id} style={{
+              display: "flex", alignItems: "center",
+              padding: "18px 0",
+              borderBottom: "1px solid rgba(200,160,100,0.08)",
+              opacity: med.taken ? 0.45 : 1,
+              transition: "opacity 0.3s",
+              animation: `fadeUp 0.4s ease ${0.15 + i * 0.06}s both`,
+            }}>
+              <div style={{ flex: 1 }}>
+                <div style={{
+                  fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+                  fontSize: 22, fontWeight: 400, color: "#2a1a08", marginBottom: 3,
+                  textDecoration: med.taken ? "line-through" : "none",
+                }}>{med.name}</div>
+                <div style={{ fontSize: 12, color: "rgba(60,40,20,0.4)", fontWeight: 300 }}>{med.dose} · {med.time}</div>
+              </div>
+              <button onClick={() => toggle(med.id)} style={{
+                width: 40, height: 40, borderRadius: "50%",
+                background: med.taken ? "#a8c8a0" : "transparent",
+                border: `1.5px solid ${med.taken ? "#a8c8a0" : "rgba(200,160,100,0.3)"}`,
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "all 0.25s",
+                animation: flash === med.id ? "checkmark 0.4s ease both" : "none",
+                flexShrink: 0,
+              }}>
+                {med.taken && (
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {allDone && (
+          <div style={{ marginTop: 24, textAlign: "center", animation: "slideUp 0.5s ease both" }}>
+            <p style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 22, fontWeight: 300, color: "#2a1a08", fontStyle: "italic" }}>
+              Well done, Margaret.
+            </p>
+            <p style={{ fontSize: 13, color: "rgba(60,40,20,0.4)", marginTop: 4, fontWeight: 300 }}>All medicines taken today.</p>
+          </div>
+        )}
+      </div>
+    </PageWrapper>
+  );
+}
+```
+
+FILE: app/find/page.tsx
+----------------------------------------
+```tsx
+"use client";
+
+import { useState, useRef } from "react";
+import Orb from "@/components/Orb";
+import PageWrapper from "@/components/PageWrapper";
+
+type Phase = "idle" | "scanning" | "found";
+type OrbMood = "idle" | "scanning" | "found";
+
+const items = ["Keys", "Wallet", "Phone", "Glasses", "Remote", "Medication", "Bag", "Watch"];
+
+export default function Find() {
+  const [selected, setSelected] = useState<string | null>(null);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [pct, setPct] = useState(0);
+  const [orbMood, setOrbMood] = useState<OrbMood>("idle");
+  const ref = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const start = () => {
+    if (!selected) return;
+    setPhase("scanning"); setOrbMood("scanning"); setPct(0);
+    ref.current = setInterval(() => {
+      setPct(p => {
+        if (p >= 100) {
+          clearInterval(ref.current!);
+          setPhase("found"); setOrbMood("found");
+          return 100;
+        }
+        return p + 1.4;
+      });
+    }, 50);
+  };
+
+  const reset = () => { setPhase("idle"); setSelected(null); setPct(0); setOrbMood("idle"); };
+
+  return (
+    <PageWrapper>
+      <div style={{ padding: "0 28px 120px", animation: "fadeUp 0.35s ease both" }}>
+        <div style={{ animation: "fadeUp 0.5s ease both", marginBottom: 28 }}>
+          <p style={{ fontSize: 11, color: "rgba(60,40,20,0.35)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 8 }}>Second Sight</p>
+          <h2 style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 40, fontWeight: 300, color: "#2a1a08", letterSpacing: "-0.3px", lineHeight: 1.1 }}>
+            {phase === "found"
+              ? <>{`Found your`}<br /><em style={{ color: "#c87840" }}>{selected}</em></>
+              : <>{`Find my`}<br /><em style={{ color: "#c87840" }}>things</em></>}
+          </h2>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 32, animation: "fadeIn 0.5s ease 0.1s both" }}>
+          <Orb mood={orbMood} size={phase === "scanning" ? 100 : 120} />
+        </div>
+
+        {phase === "scanning" && (
+          <div style={{ animation: "fadeUp 0.4s ease both", marginBottom: 24 }}>
+            <p style={{ textAlign: "center", fontSize: 15, color: "rgba(60,40,20,0.55)", fontWeight: 300, marginBottom: 6 }}>
+              Looking for your {selected}…
+            </p>
+            <div style={{ height: 3, background: "rgba(200,120,64,0.12)", borderRadius: 2, overflow: "hidden", marginTop: 16 }}>
+              <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg, #f5c084, #c87840)", borderRadius: 2, transition: "width 0.08s linear" }} />
+            </div>
+            <p style={{ textAlign: "center", fontSize: 11, color: "rgba(60,40,20,0.3)", marginTop: 8 }}>{Math.round(pct)}% scanned</p>
+          </div>
+        )}
+
+        {phase === "found" && (
+          <div style={{ animation: "slideUp 0.5s ease both" }}>
+            <div style={{ borderRadius: 22, overflow: "hidden", border: "1px solid rgba(200,160,100,0.2)", marginBottom: 16, boxShadow: "0 8px 40px rgba(120,80,40,0.1)" }}>
+              <div style={{ height: 180, background: "linear-gradient(160deg, #c8b49e 0%, #a89070 55%, #9a8060 100%)", position: "relative", overflow: "hidden" }}>
+                <div style={{ position: "absolute", bottom: "42%", left: "50%", transform: "translateX(-50%)", width: "58%", height: 10, background: "#6b4c30", borderRadius: 3 }} />
+                <div style={{ position: "absolute", bottom: "23%", left: "23%", width: 5, height: "20%", background: "#5a3d22" }} />
+                <div style={{ position: "absolute", bottom: "23%", right: "23%", width: 5, height: "20%", background: "#5a3d22" }} />
+                <div style={{ position: "absolute", bottom: "44%", left: "36%", width: 30, height: 14, background: "#d4a040", borderRadius: 5, boxShadow: "0 0 24px rgba(212,160,64,0.9)" }} />
+                <div style={{ position: "absolute", bottom: "41%", left: "31%", width: "22%", height: "22%", border: "1.5px solid #f5c084", borderRadius: 8, boxShadow: "0 0 20px rgba(245,192,132,0.4)" }}>
+                  <div style={{ position: "absolute", top: -22, left: 0, background: "#c87840", color: "white", fontSize: 10, fontWeight: 600, padding: "3px 8px", borderRadius: 5 }}>{selected} · 91%</div>
+                </div>
+              </div>
+              <div style={{ padding: "12px 18px", background: "rgba(254,250,244,0.8)", display: "flex", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 12, color: "rgba(60,40,20,0.45)" }}>91% confidence</span>
+                <span style={{ fontSize: 12, color: "rgba(60,40,20,0.3)" }}>Just now</span>
+              </div>
+            </div>
+
+            <div style={{ background: "rgba(255,248,236,0.8)", border: "1px solid rgba(200,160,100,0.15)", borderRadius: 20, padding: "20px 22px", marginBottom: 14 }}>
+              <p style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 20, fontWeight: 300, color: "#2a1a08", lineHeight: 1.6, marginBottom: 14 }}>
+                Your {selected?.toLowerCase()} are on the table, center-right, next to a mug. About 1.5 metres away.
+              </p>
+              <div style={{ height: 1, background: "rgba(200,160,100,0.12)", margin: "0 0 14px" }} />
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {["Look for them on the wooden surface", "They are next to a light-coloured mug", "Walk toward the table and reach to the center"].map((tip, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                    <div style={{ width: 4, height: 4, borderRadius: "50%", background: "#c87840", flexShrink: 0, marginTop: 7 }} />
+                    <span style={{ fontSize: 13, color: "rgba(60,40,20,0.55)", fontWeight: 300, lineHeight: 1.5 }}>{tip}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button style={{ flex: 2, background: "linear-gradient(135deg, #f5c084, #c87840)", color: "white", border: "none", borderRadius: 16, padding: "16px", fontSize: 14, fontWeight: 500, cursor: "pointer", boxShadow: "0 6px 24px rgba(200,120,64,0.28)" }}>Read aloud</button>
+              <button onClick={reset} style={{ flex: 1, background: "transparent", color: "rgba(60,40,20,0.5)", border: "1px solid rgba(200,160,100,0.2)", borderRadius: 16, padding: "16px", fontSize: 14, cursor: "pointer" }}>Again</button>
+            </div>
+          </div>
+        )}
+
+        {phase === "idle" && (
+          <div style={{ animation: "fadeUp 0.5s ease 0.15s both" }}>
+            <p style={{ fontSize: 11, color: "rgba(60,40,20,0.35)", letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: 14 }}>What are we looking for?</p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 28 }}>
+              {items.map(item => (
+                <button key={item} onClick={() => setSelected(item)} style={{
+                  background: selected === item ? "rgba(200,120,64,0.12)" : "rgba(255,248,236,0.7)",
+                  border: `1px solid ${selected === item ? "rgba(200,120,64,0.4)" : "rgba(200,160,100,0.15)"}`,
+                  borderRadius: 40, padding: "10px 18px",
+                  fontSize: 14, fontWeight: selected === item ? 500 : 300,
+                  color: selected === item ? "#c87840" : "rgba(60,40,20,0.6)",
+                  cursor: "pointer", transition: "all 0.15s",
+                }}>{item}</button>
+              ))}
+            </div>
+            <button onClick={start} disabled={!selected} style={{
+              width: "100%",
+              background: selected ? "linear-gradient(135deg, #f5c084, #c87840)" : "rgba(200,160,100,0.1)",
+              color: selected ? "white" : "rgba(60,40,20,0.2)",
+              border: "none", borderRadius: 18, padding: "20px",
+              fontSize: 16, fontWeight: 500, cursor: selected ? "pointer" : "not-allowed",
+              boxShadow: selected ? "0 8px 32px rgba(200,120,64,0.25)" : "none",
+              transition: "all 0.2s",
+              fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", letterSpacing: "0.02em",
+            }}>
+              {selected ? `Find my ${selected}` : "Select something first"}
+            </button>
+          </div>
+        )}
+      </div>
+    </PageWrapper>
+  );
+}
+```
+
+FILE: app/confused/page.tsx
+----------------------------------------
+```tsx
+"use client";
+
+import { useState } from "react";
+import Orb from "@/components/Orb";
+import PageWrapper from "@/components/PageWrapper";
+
+type OrbMood = "calm" | "happy";
+
+interface Choice {
+  label: string;
+  next: number;
+  secondary?: boolean;
+}
+
+interface Step {
+  orb: OrbMood;
+  heading: React.ReactNode;
+  body: string | null;
+  extra: React.ReactNode | null;
+  choices: Choice[];
+}
+
+export default function Confused() {
+  const [step, setStep] = useState(0);
+
+  const steps: Step[] = [
+    {
+      orb: "calm",
+      heading: <>It&apos;s okay,<br /><em style={{ color: "#c87840" }}>Margaret.</em></>,
+      body: "You're safe. Take a slow, deep breath with me.",
+      extra: (
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 28 }}>
+          <div style={{ position: "relative", width: 90, height: 90 }}>
+            {[0, 1].map(i => (
+              <div key={i} style={{
+                position: "absolute", inset: i * 14, borderRadius: "50%",
+                background: "rgba(200,120,200,0.08)",
+                animation: `breatheRing ${3 + i}s ease-in-out ${i * 0.4}s infinite`,
+              }} />
+            ))}
+            <div style={{ position: "absolute", inset: 28, borderRadius: "50%", background: "rgba(200,120,200,0.2)", animation: "breatheRing 3s ease-in-out infinite" }} />
+          </div>
+        </div>
+      ),
+      choices: [{ label: "I'm ready", next: 1 }],
+    },
+    {
+      orb: "calm",
+      heading: <>Do you know<br /><em style={{ color: "#c87840" }}>where you are?</em></>,
+      body: null,
+      extra: null,
+      choices: [
+        { label: "Yes, I know", next: 2 },
+        { label: "I'm at home", next: 2 },
+        { label: "I'm not sure", next: 2 },
+      ],
+    },
+    {
+      orb: "happy",
+      heading: <>You&apos;re doing<br /><em style={{ color: "#c87840" }}>great.</em></>,
+      body: "Here's everything you need right now.",
+      extra: (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 24 }}>
+          {[
+            { l: "Your name", v: "Margaret" },
+            { l: "Today",     v: new Date().toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long" }) },
+            { l: "Time",      v: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) },
+            { l: "Your home", v: "14 Maple Street, Toronto" },
+          ].map((x, i) => (
+            <div key={i} style={{
+              background: "rgba(255,248,236,0.8)",
+              border: "1px solid rgba(200,160,100,0.15)",
+              borderRadius: 16, padding: "14px 18px",
+              animation: `fadeUp 0.4s ease ${i * 0.08}s both`,
+            }}>
+              <div style={{ fontSize: 10, letterSpacing: "0.14em", textTransform: "uppercase", color: "rgba(60,40,20,0.35)", marginBottom: 4 }}>{x.l}</div>
+              <div style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 22, fontWeight: 400, color: "#2a1a08" }}>{x.v}</div>
+            </div>
+          ))}
+        </div>
+      ),
+      choices: [{ label: "Start over", next: 0, secondary: true }],
+    },
+  ];
+
+  const s = steps[step];
+
+  return (
+    <PageWrapper>
+      <div style={{ padding: "0 28px 120px", animation: "fadeUp 0.35s ease both" }}>
+        <div style={{ animation: "fadeUp 0.5s ease both", marginBottom: 28 }}>
+          <p style={{ fontSize: 11, color: "rgba(60,40,20,0.35)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 8 }}>I&apos;m here for you</p>
+          <h2 key={step} style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 40, fontWeight: 300, color: "#2a1a08", letterSpacing: "-0.3px", lineHeight: 1.15, animation: "fadeUp 0.4s ease both" }}>
+            {s.heading}
+          </h2>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 28 }}>
+          <Orb mood={s.orb} size={110} />
+        </div>
+
+        {s.body && (
+          <p style={{ fontSize: 20, color: "rgba(60,40,20,0.55)", fontWeight: 300, lineHeight: 1.65, marginBottom: 28, textAlign: "center", fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontStyle: "italic", animation: "fadeIn 0.5s ease 0.1s both" }}>
+            {s.body}
+          </p>
+        )}
+
+        <div style={{ animation: "fadeUp 0.4s ease 0.1s both" }} key={step}>
+          {s.extra}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {s.choices.map((c, i) => (
+              <button key={i} onClick={() => setStep(c.next)} style={{
+                width: "100%",
+                background: c.secondary ? "transparent" : "linear-gradient(135deg, #f5c084, #c87840)",
+                color: c.secondary ? "rgba(60,40,20,0.45)" : "white",
+                border: c.secondary ? "1px solid rgba(200,160,100,0.2)" : "none",
+                borderRadius: 18, padding: "18px",
+                fontSize: 16, fontWeight: 400,
+                fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+                cursor: "pointer",
+                boxShadow: c.secondary ? "none" : "0 8px 32px rgba(200,120,64,0.22)",
+              }}>{c.label}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </PageWrapper>
+  );
+}
+```
+
+FILE: app/day/page.tsx
+----------------------------------------
+```tsx
+"use client";
+
+import Orb from "@/components/Orb";
+import PageWrapper from "@/components/PageWrapper";
+
+const schedule = [
+  { time: "8:00 AM",  label: "Breakfast",        done: true,  current: false, section: "Morning"   },
+  { time: "8:30 AM",  label: "Morning medicines", done: true,  current: false, section: "Morning"   },
+  { time: "10:00 AM", label: "Walk outside",      done: true,  current: false, section: "Morning"   },
+  { time: "12:00 PM", label: "Lunch",             done: false, current: true,  section: "Afternoon" },
+  { time: "2:00 PM",  label: "Rest time",         done: false, current: false, section: "Afternoon" },
+  { time: "4:00 PM",  label: "Call with family",  done: false, current: false, section: "Afternoon" },
+  { time: "6:00 PM",  label: "Dinner",            done: false, current: false, section: "Evening"   },
+  { time: "8:00 PM",  label: "Evening medicines", done: false, current: false, section: "Evening"   },
+  { time: "9:00 PM",  label: "Wind down",         done: false, current: false, section: "Evening"   },
+];
+
+const dateStr = new Date().toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long" });
+
+export default function Day() {
+  return (
+    <PageWrapper>
+      <div style={{ padding: "0 28px 120px", animation: "fadeUp 0.35s ease both" }}>
+        <div style={{ animation: "fadeUp 0.5s ease both", marginBottom: 28 }}>
+          <p style={{ fontSize: 11, color: "rgba(60,40,20,0.35)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 8 }}>{dateStr}</p>
+          <h2 style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 40, fontWeight: 300, color: "#2a1a08", letterSpacing: "-0.3px", lineHeight: 1.1 }}>
+            My <em style={{ color: "#c87840" }}>day</em>
+          </h2>
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 32 }}>
+          <Orb mood="idle" size={90} />
+        </div>
+
+        <div style={{ animation: "fadeUp 0.5s ease 0.15s both" }}>
+          {(["Morning", "Afternoon", "Evening"] as const).map((section, si) => (
+            <div key={section} style={{ marginBottom: 28 }}>
+              <p style={{ fontSize: 11, color: "rgba(60,40,20,0.3)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 12 }}>{section}</p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                {schedule.filter(s => s.section === section).map((item, i) => (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", gap: 16,
+                    padding: item.current ? "14px 12px" : "14px 0",
+                    borderBottom: "1px solid rgba(200,160,100,0.07)",
+                    opacity: item.done ? 0.38 : 1,
+                    background: item.current ? "rgba(245,192,132,0.06)" : "transparent",
+                    borderRadius: item.current ? 12 : 0,
+                    transition: "all 0.2s",
+                    animation: `fadeUp 0.4s ease ${si * 0.1 + i * 0.05}s both`,
+                  }}>
+                    <div style={{
+                      width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+                      background: item.done ? "#c8d8c0" : item.current ? "#f5c084" : "rgba(200,160,100,0.2)",
+                      boxShadow: item.current ? "0 0 10px rgba(245,192,132,0.6)" : "none",
+                    }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 20, fontWeight: item.current ? 400 : 300, color: "#2a1a08", textDecoration: item.done ? "line-through" : "none" }}>{item.label}</div>
+                      <div style={{ fontSize: 11, color: "rgba(60,40,20,0.35)", marginTop: 2 }}>{item.time}</div>
+                    </div>
+                    {item.current && <span style={{ fontSize: 11, background: "rgba(200,120,64,0.12)", color: "#c87840", padding: "4px 10px", borderRadius: 20, fontWeight: 500, letterSpacing: "0.04em" }}>Now</span>}
+                    {item.done && (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#a8c8a0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </PageWrapper>
+  );
+}
+```
+
+FILE: app/summary/page.tsx
+----------------------------------------
+```tsx
+"use client";
+
+import { useState } from "react";
+import Orb from "@/components/Orb";
+import PageWrapper from "@/components/PageWrapper";
+import { getFullContext } from "@/lib/memory";
+
+type OrbMood = "idle" | "scanning" | "happy";
+
+export default function Summary() {
+  const [report, setReport] = useState<string | null>(null);
+  const [orbMood, setOrbMood] = useState<OrbMood>("idle");
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const generate = async () => {
+    setLoading(true);
+    setOrbMood("scanning");
+    setReport(null);
+
+    const context = getFullContext();
+
+    try {
+      const res = await fetch("/api/summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ context }),
+      });
+      const data = await res.json() as { summary: string };
+      setReport(data.summary);
+      setOrbMood("happy");
+      setTimeout(() => setOrbMood("idle"), 3000);
+    } catch {
+      setReport("Unable to generate a report right now. Please try again shortly.");
+      setOrbMood("idle");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyToClipboard = async () => {
+    if (!report) return;
+    await navigator.clipboard.writeText(report);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const today = new Date().toLocaleDateString("en-US", {
+    weekday: "long", month: "long", day: "numeric",
+  });
+
+  return (
+    <PageWrapper>
+      <div style={{ padding: "0 28px 120px", animation: "fadeUp 0.35s ease both" }}>
+        {/* Header */}
+        <div style={{ marginBottom: 28 }}>
+          <p style={{ fontSize: 11, color: "rgba(60,40,20,0.35)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 8 }}>Caregiver</p>
+          <h2 style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 40, fontWeight: 300, color: "#2a1a08", letterSpacing: "-0.3px", lineHeight: 1.1 }}>
+            Daily<br /><em style={{ color: "#c87840" }}>report</em>
+          </h2>
+          <p style={{ fontSize: 12, color: "rgba(60,40,20,0.35)", marginTop: 8 }}>{today}</p>
+        </div>
+
+        {/* Orb */}
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 32 }}>
+          <Orb mood={orbMood} size={110} />
+        </div>
+
+        {/* Generate button */}
+        {!report && (
+          <button
+            onClick={generate}
+            disabled={loading}
+            style={{
+              width: "100%",
+              background: loading ? "rgba(200,160,100,0.15)" : "linear-gradient(135deg, #f5c084, #c87840)",
+              color: loading ? "rgba(60,40,20,0.3)" : "white",
+              border: "none",
+              borderRadius: 18,
+              padding: "22px",
+              fontSize: 18,
+              fontWeight: 300,
+              fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+              cursor: loading ? "not-allowed" : "pointer",
+              boxShadow: loading ? "none" : "0 8px 32px rgba(200,120,64,0.25)",
+              transition: "all 0.2s",
+              letterSpacing: "0.02em",
+              animation: "fadeUp 0.5s ease 0.1s both",
+            }}
+          >
+            {loading ? "Generating report…" : "Generate today's report"}
+          </button>
+        )}
+
+        {/* Report card */}
+        {report && (
+          <div style={{ animation: "slideUp 0.5s ease both" }}>
+            <div style={{
+              background: "rgba(255,248,236,0.85)",
+              border: "1px solid rgba(200,160,100,0.18)",
+              borderRadius: 22,
+              padding: "28px 26px",
+              marginBottom: 14,
+              boxShadow: "0 4px 32px rgba(120,80,40,0.08)",
+            }}>
+              <p style={{
+                fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+                fontSize: 20,
+                fontWeight: 300,
+                color: "#2a1a08",
+                lineHeight: 1.75,
+              }}>
+                {report}
+              </p>
+            </div>
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button
+                onClick={copyToClipboard}
+                style={{
+                  flex: 2,
+                  background: copied ? "#a8c8a0" : "linear-gradient(135deg, #f5c084, #c87840)",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 16,
+                  padding: "16px",
+                  fontSize: 14,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                  boxShadow: copied ? "none" : "0 6px 24px rgba(200,120,64,0.28)",
+                  transition: "all 0.25s",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                }}
+              >
+                {copied ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    Copied
+                  </>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </svg>
+                    Copy for caregiver
+                  </>
+                )}
+              </button>
+
+              <button
+                onClick={() => { setReport(null); setOrbMood("idle"); }}
+                style={{
+                  flex: 1,
+                  background: "transparent",
+                  color: "rgba(60,40,20,0.45)",
+                  border: "1px solid rgba(200,160,100,0.2)",
+                  borderRadius: 16,
+                  padding: "16px",
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </PageWrapper>
+  );
+}
+```
