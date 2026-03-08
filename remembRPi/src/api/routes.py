@@ -7,6 +7,7 @@ access snapshots, and check system health.
 These routes are registered in the main FastAPI app.
 """
 
+import asyncio
 import os
 import time
 import uuid
@@ -160,7 +161,6 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
     if body.sweep and pan_tilt and pan_tilt.available:
         await pan_tilt.sweep()
 
-    snapshot_url = None
     result = finder.find(body.label)
 
     # Add LiDAR distance if available
@@ -170,15 +170,18 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
             result["distance_m"] = dist_info["distance_m"]
             result["distance_text"] = dist_info["distance_text"]
 
+    # If the object is visible right now, wait 500ms for the frame to
+    # stabilise then take a high-quality snapshot.
     if result.get("found_now") and runner:
+        await asyncio.sleep(0.5)
         frame = runner.get_latest_frame()
         if frame is not None:
-            # Get current detections for bounding box overlay
             memory = request.app.state.memory
             dn = getattr(request.app.state, "display_names", {})
             current_objects = memory.get_current_objects()
             detections = _objects_to_detection_records(current_objects, dn)
-            snapshot_url = _save_snapshot(frame, body.label, snapshot_dir, request, detections=detections)
+            snapshot_url = _save_snapshot(frame, body.label, snapshot_dir, request,
+                                         detections=detections, quality=95)
             result["snapshot_url"] = snapshot_url
 
     # Set companion state based on result
@@ -371,11 +374,12 @@ async def status(request: Request) -> StatusResponse:
 
 def _save_snapshot(
     frame, label: str, snapshot_dir: str, request: Request,
-    detections=None,
+    detections=None, quality: int = 85,
 ) -> str | None:
     """Save a snapshot and return its URL.
 
     If detections are provided, bounding boxes and labels are drawn on the image.
+    quality: JPEG quality 0-100 (higher = better quality, larger file).
     """
     try:
         Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
@@ -393,8 +397,8 @@ def _save_snapshot(
         else:
             bgr = frame
 
-        cv2.imwrite(str(file_path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        log.info("Saved snapshot: %s", snapshot_id)
+        cv2.imwrite(str(file_path), bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        log.info("Saved snapshot: %s (quality=%d)", snapshot_id, quality)
 
         return f"/snapshots/{snapshot_id}"
     except Exception as e:

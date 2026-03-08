@@ -38,6 +38,7 @@ from src.services.barcode_service import BarcodeService
 from src.services.care_plan_service import CarePlanService
 from src.services.lidar_service import LidarService
 from src.services.esp32_state_service import ESP32StateService
+from src.services.drug_lookup_service import scan_and_lookup as drug_scan_and_lookup, drug_info_summary
 
 
 def load_config(config_path: str = "config/app_config.yaml") -> dict:
@@ -308,23 +309,46 @@ def create_app(config: dict | None = None) -> FastAPI:
     app.include_router(router)
 
     # Register WebSocket message handlers
-    async def handle_find(websocket: WebSocket, message: dict) -> dict:
+    async def handle_find(websocket: WebSocket, message: dict) -> dict | None:
         label = message.get("label", "")
         if not label:
             return {"type": "error", "message": "Missing 'label' field for find"}
         result = finder.find(label)
 
-        # Try to include snapshot if found now
-        runner = getattr(app.state, "hailo_runner", None)
-        if result.get("found_now") and runner:
-            frame = runner.get_latest_frame()
-            if frame is not None:
+        # If found now, send the find result immediately so the phone
+        # knows we spotted the object, then wait 500ms for the frame to
+        # stabilise and take a high-quality snapshot as a second message.
+        if result.get("found_now"):
+            # 1. Send the find result right away
+            await ws_manager.send_to(websocket, result)
+
+            # 2. Schedule the delayed snapshot
+            async def _delayed_snapshot():
+                await asyncio.sleep(0.5)
+                runner = getattr(app.state, "hailo_runner", None)
+                if not runner:
+                    return
+                frame = runner.get_latest_frame()
+                if frame is None:
+                    return
                 from src.api.routes import _save_snapshot, _objects_to_detection_records
                 current_objects = memory.get_current_objects()
                 detections = _objects_to_detection_records(current_objects, display_names)
-                url = _save_snapshot(frame, label, snapshot_dir, None, detections=detections)
+                url = _save_snapshot(frame, label, snapshot_dir, None,
+                                     detections=detections, quality=65)
                 if url:
-                    result["snapshot_url"] = url
+                    snapshot_id = Path(url).name
+                    await ws_manager.send_to(websocket, {
+                        "type": "find_snapshot_ready",
+                        "snapshot_id": snapshot_id,
+                        "url": url,
+                        "label": label,
+                        "timestamp": time.time(),
+                    })
+
+            asyncio.create_task(_delayed_snapshot())
+            # Return None — we already sent the find result above
+            return None
 
         return result
 
@@ -413,9 +437,85 @@ def create_app(config: dict | None = None) -> FastAPI:
         result["type"] = "sweep_result"
         return result
 
+    async def handle_scan(websocket: WebSocket, message: dict) -> dict:
+        """Handle a barcode scan request from the phone.
+
+        Grabs the latest camera frame, decodes any barcodes using pyzbar,
+        then looks up the barcode via openFDA / UPC databases and returns
+        the drug/product info to the phone.
+        """
+        runner = getattr(app.state, "hailo_runner", None)
+        if not runner:
+            return {"type": "scan_result", "status": "error",
+                    "message": "No active camera pipeline"}
+
+        frame = runner.get_latest_frame()
+        if frame is None:
+            return {"type": "scan_result", "status": "error",
+                    "message": "No camera frame available"}
+
+        # Decode barcodes from the camera frame
+        try:
+            from pyzbar.pyzbar import decode as pyzbar_decode
+            import cv2
+
+            # Convert to grayscale for better barcode detection
+            if len(frame.shape) == 3:
+                gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            else:
+                gray = frame
+
+            barcodes = pyzbar_decode(gray)
+        except ImportError:
+            return {"type": "scan_result", "status": "error",
+                    "message": "pyzbar not installed on server"}
+        except Exception as e:
+            log.error("Barcode decode error: %s", e)
+            return {"type": "scan_result", "status": "error",
+                    "message": f"Barcode decode failed: {e}"}
+
+        if not barcodes:
+            return {"type": "scan_result", "status": "no_barcode",
+                    "message": "No barcode detected in camera view. "
+                               "Hold the barcode steady in front of the camera and try again."}
+
+        # Use the first barcode found
+        bc = barcodes[0]
+        barcode_data = bc.data.decode("utf-8", errors="replace")
+        barcode_type = bc.type  # e.g. EAN13, UPCA, CODE128, etc.
+
+        log.info("Barcode detected: %s (type: %s)", barcode_data, barcode_type)
+
+        # Look up in drug databases (runs network requests — done in thread)
+        loop = asyncio.get_event_loop()
+        drug = await loop.run_in_executor(None, drug_scan_and_lookup, barcode_data)
+
+        if drug:
+            return {
+                "type": "scan_result",
+                "status": "found",
+                "barcode": barcode_data,
+                "barcode_type": barcode_type,
+                "drug_info": drug,
+                "summary": drug_info_summary(drug),
+                "message": f"Found: {drug['brand_name']} ({drug['generic_name']})",
+            }
+
+        # Barcode decoded but no drug match — still return the raw barcode
+        return {
+            "type": "scan_result",
+            "status": "barcode_only",
+            "barcode": barcode_data,
+            "barcode_type": barcode_type,
+            "drug_info": None,
+            "message": f"Barcode scanned: {barcode_data} ({barcode_type}). "
+                       "No matching drug found in database.",
+        }
+
     msg_router.register("get_recent_objects", handle_get_recent_objects)
     msg_router.register("start_med_scan", handle_start_med_scan)
     msg_router.register("sweep", handle_sweep)
+    msg_router.register("scan", handle_scan)
 
     # WebSocket endpoint
     @app.websocket("/ws")
