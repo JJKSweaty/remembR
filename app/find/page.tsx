@@ -269,11 +269,10 @@ export default function Find() {
 
         // 1. Center camera
         speak(`Searching for your ${selected.toLowerCase()}. Please wait a moment while I look around the room.`);
-        // TEST MODE: sweep disabled — testing Pi detection only
-        // await triggerEspCenter();
+        await triggerEspCenter();
 
         // 2. Start physical sweep (Fire and forget from frontend perspective)
-        // triggerEspSweep();
+        triggerEspSweep();
 
         // 3. Safety timeout — fires at 20s (after the ~17s sweep finishes).
         //    Only runs if WebSocket never delivers onSweepResult.
