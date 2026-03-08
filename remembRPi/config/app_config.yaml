@@ -7,8 +7,8 @@ server:
 camera:
   # "auto" discovers USB webcam automatically, or specify /dev/videoX
   device: "auto"
-  width: 1280
-  height: 720
+  width: 640
+  height: 480
   frame_rate: 30
 
 hailo:
