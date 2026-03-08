@@ -7,15 +7,15 @@ server:
 camera:
   # "auto" discovers USB webcam automatically, or specify /dev/videoX
   device: "auto"
-  width: 640
-  height: 480
+  width: 1920
+  height: 1080
   frame_rate: 30
 
 hailo:
   # Path to hailo-rpi5-examples repo
   examples_path: "/home/jjk/hailo-rpi5-examples"
   # Model to use (h8l variant for Hailo-8L on RPi5 AI HAT+)
-  model: "yolov8s"
+  model: "yolov8m"
   # Architecture auto-detected from device
   arch: "auto"
   # NMS thresholds
@@ -24,7 +24,7 @@ hailo:
   batch_size: 2
 
 detection:
-  confidence_threshold: 0.45
+  confidence_threshold: 0.75
   # Labels we care about for the missing-object use case
   allowed_labels:
     - "bottle"
@@ -50,11 +50,12 @@ detection:
     bottle: 0.45
     cup: 0.50
     remote: 0.50
+    handbag: 0.40
   # Debounce: object must appear in min_hits/window frames to be confirmed
   debounce_window: 5
   debounce_min_hits: 3
   # Min bounding box area ratio (fraction of frame area)
-  min_bbox_area_ratio: 0.015
+  min_bbox_area_ratio: 0.008
 
 memory:
   store_path: "data/memory_store.json"

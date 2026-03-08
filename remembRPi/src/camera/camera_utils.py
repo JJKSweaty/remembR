@@ -11,7 +11,7 @@ import numpy as np
 from src.utils.logging_utils import get_logger
 
 
-def capture_single_frame(device: str, width: int = 1280, height: int = 720) -> np.ndarray | None:
+def capture_single_frame(device: str, width: int = 1920, height: int = 1080) -> np.ndarray | None:
     """Capture a single frame from a USB camera using OpenCV.
 
     Used as a fallback for on-demand snapshots when the GStreamer pipeline's
