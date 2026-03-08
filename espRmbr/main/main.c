@@ -56,32 +56,32 @@ static const char *TAG = "pan_tilt";
 // --- Hard safety limits (in microseconds) ---
 // The code will never send a pulse outside this range, no matter what.
 // This prevents physically damaging the servos by pushing past their limits.
-#define SERVO_ABS_MIN_US  200
-#define SERVO_ABS_MAX_US  2800
+#define SERVO_ABS_MIN_US  300
+#define SERVO_ABS_MAX_US  2000
 
 // --- Pan servo range (left/right rotation) ---
 // These values control how far left and right the pan servo moves.
 // 520 = full left (0°), 2520 = full right (180°), 1520 = center (90°)
 // If the servo hits the physical end-stop before reaching these values, reduce MIN or MAX.
-#define PAN_MIN_US   500    // Full left position
-#define PAN_MAX_US   1800   // Full right position
-#define PAN_CENTER   1150   // Center / straight ahead
+#define PAN_MIN_US   630    // Full left position
+#define PAN_MAX_US   1680   // Full right position
+#define PAN_CENTER   1155   // Center / straight ahead
 
 // --- Tilt servo range (up/down rotation) ---
 // These values control how far up and down the tilt servo moves.
 // If the camera tilts too far and the wires get strained, increase TILT_MIN_US.
-#define TILT_MIN_US  200    // Fully tilted down
-#define TILT_MAX_US  1700   // Tilted up / horizontal
-#define TILT_CENTER  1520   // Center / horizontal
+#define TILT_MIN_US  400    // Fully tilted down
+#define TILT_MAX_US  800   // Tilted up / horizontal
+#define TILT_CENTER  600   // Center / horizontal
 
 // --- Sweep speed settings ---
 // These control how fast the sweep pattern moves.
 // Bigger STEP = fewer positions visited (faster but less coverage)
 // Bigger DELAY = slower movement (more time at each position)
-#define PAN_STEP_US      55     // How many microseconds to advance pan each step (~5 degrees)
+#define PAN_STEP_US      110     // How many microseconds to advance pan each step (~5 degrees)
 #define TILT_STEP_US     55     // How many microseconds to advance tilt each step (~5 degrees)
 #define PAN_DELAY_MS     300    // How long to wait at each pan position before moving on (ms)
-#define TILT_DELAY_MS    25     // How long to wait between each tilt step (ms)
+#define TILT_DELAY_MS    100     // How long to wait between each tilt step (ms)
 
 // --- HTTP server port ---
 // The ESP32 will listen for commands at http://<IP>:8080/
@@ -99,6 +99,20 @@ static const char *TAG = "pan_tilt";
    Just telling the compiler "these functions exist further down in the file"
    ========================================================= */
 static httpd_handle_t start_http_server(void);
+static void uart_send_line(const char *s);
+
+/* =========================================================
+   STOP / PAUSE / RESUME FLAGS + SWEEP TASK HANDLE
+   
+   stop_requested  — STOP command: aborts sweep and returns to center.
+   pause_requested — PAUSE command: freezes servos exactly where they are.
+                     The sweep loop waits in place until RESUME is sent.
+                     Servos stay powered and hold their position during pause.
+   sweep_task_handle — NULL means no sweep is running.
+   ========================================================= */
+static volatile bool stop_requested    = false;  // Set by STOP  — aborts sweep, goes to center
+static volatile bool pause_requested   = false;  // Set by PAUSE — freezes in place until RESUME
+static TaskHandle_t  sweep_task_handle = NULL;   // NULL = no sweep running
 
 /* =========================================================
    WIFI EVENT HANDLER
@@ -305,6 +319,38 @@ static void center_both(void) {
 }
 
 /* =========================================================
+   PAUSE HELPER
+   
+   Called inside the sweep loop whenever it's about to move.
+   If pause_requested is set, this function just sits in a tight
+   loop checking every 100ms — servos stay exactly where they are
+   because we simply stop sending new position commands.
+   
+   The loop exits when:
+     - RESUME is sent  → pause_requested goes false → sweep continues
+     - STOP is sent    → stop_requested goes true   → sweep aborts
+   ========================================================= */
+static void wait_if_paused(void) {
+    if (!pause_requested) return; // Not paused — nothing to do
+
+    uart_send_line("PAUSED. Send RESUME to continue or STOP to abort.");
+    ESP_LOGI(TAG, "Sweep PAUSED — waiting for RESUME or STOP");
+
+    // Sit here doing nothing until unpaused or stopped
+    while (pause_requested && !stop_requested) {
+        vTaskDelay(pdMS_TO_TICKS(100)); // Check every 100ms — low CPU usage
+    }
+
+    // Figure out why we woke up
+    if (stop_requested) {
+        ESP_LOGI(TAG, "STOP received while paused — aborting");
+    } else {
+        uart_send_line("RESUMED. Continuing sweep...");
+        ESP_LOGI(TAG, "Sweep RESUMED");
+    }
+}
+
+/* =========================================================
    SWEEP PATTERN
    
    This is the main scanning movement. Here's what it does:
@@ -320,19 +366,14 @@ static void center_both(void) {
    
    To make the sweep slower: increase PAN_DELAY_MS or TILT_DELAY_MS
    To scan fewer positions: increase PAN_STEP_US or TILT_STEP_US
-   
-   sweep_in_progress prevents two sweep commands from running at the same time.
+
+   The sweep runs as its own FreeRTOS task (sweep_task) so that the
+   UART stays fully responsive during the sweep. This is what makes
+   STOP and PAUSE work — the UART task and sweep task run at the same time.
    ========================================================= */
-static volatile bool sweep_in_progress = false;
 
-static void do_sweep(void) {
-    // Guard: don't start a second sweep if one is already running
-    if (sweep_in_progress) {
-        ESP_LOGW(TAG, "Sweep already in progress, ignoring request");
-        return;
-    }
-    sweep_in_progress = true;
-
+// The actual sweep logic — runs inside sweep_task (its own FreeRTOS task)
+static void sweep_task(void *arg) {
     ESP_LOGI(TAG, "===========================================");
     ESP_LOGI(TAG, "SWEEP START");
     ESP_LOGI(TAG, "===========================================");
@@ -352,6 +393,20 @@ static void do_sweep(void) {
     int step = 0;
 
     while (current_pan <= PAN_MAX_US) {
+
+        // ── STOP CHECK (between pan columns) ──────────────────────────────
+        // If STOP was typed in the serial monitor, bail out immediately
+        if (stop_requested) {
+            ESP_LOGW(TAG, "STOP requested — aborting sweep at pan=%d", current_pan);
+            uart_send_line("STOPPED: returning to center...");
+            break;
+        }
+
+        // ── PAUSE CHECK (between pan columns) ─────────────────────────────
+        // Servos hold their current position while paused
+        wait_if_paused();
+        if (stop_requested) break; // STOP may have been sent while paused
+
         step++;
         ESP_LOGI(TAG, "Step %d/%d - Pan at %d us", step, num_pan_steps, current_pan);
 
@@ -363,6 +418,12 @@ static void do_sweep(void) {
         ESP_LOGI(TAG, "  Tilting down...");
         int tilt = TILT_MAX_US;
         while (tilt >= TILT_MIN_US) {
+            // ── STOP CHECK (during tilt down) ─────────────────────────────
+            if (stop_requested) break;
+            // ── PAUSE CHECK (during tilt down) ────────────────────────────
+            wait_if_paused();
+            if (stop_requested) break;
+
             set_tilt_us(tilt);
             vTaskDelay(pdMS_TO_TICKS(TILT_DELAY_MS));
             tilt -= TILT_STEP_US; // Move down by one step
@@ -372,9 +433,21 @@ static void do_sweep(void) {
         ESP_LOGI(TAG, "  Tilting up...");
         tilt = TILT_MIN_US;
         while (tilt <= TILT_MAX_US) {
+            // ── STOP CHECK (during tilt up) ───────────────────────────────
+            if (stop_requested) break;
+            // ── PAUSE CHECK (during tilt up) ──────────────────────────────
+            wait_if_paused();
+            if (stop_requested) break;
+
             set_tilt_us(tilt);
             vTaskDelay(pdMS_TO_TICKS(TILT_DELAY_MS));
             tilt += TILT_STEP_US; // Move up by one step
+        }
+
+        // ── STOP CHECK (after tilt cycle, before pan delay) ───────────────
+        if (stop_requested) {
+            uart_send_line("STOPPED: returning to center...");
+            break;
         }
 
         // Pause before advancing to the next pan position
@@ -384,17 +457,50 @@ static void do_sweep(void) {
         current_pan += PAN_STEP_US;
     }
 
-    // --- Step 4: Sweep done — return both servos to center ---
+    // --- Step 4: Always return to center when done — whether finished or stopped ---
+    // NOTE: If we were PAUSED and then STOPped, we still return to center here.
+    //       If we just finished normally, we also return to center.
+    //       The servos stay WHERE THEY ARE only during an active PAUSE.
     ESP_LOGI(TAG, "Returning to center...");
-    set_pan_us(PAN_CENTER);
-    set_tilt_us(TILT_CENTER);
+    center_both();
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    ESP_LOGI(TAG, "===========================================");
-    ESP_LOGI(TAG, "SWEEP COMPLETE!");
-    ESP_LOGI(TAG, "===========================================");
+    if (stop_requested) {
+        uart_send_line("OK: Stopped. Servos returned to center.");
+        ESP_LOGI(TAG, "===========================================");
+        ESP_LOGI(TAG, "SWEEP STOPPED BY USER");
+        ESP_LOGI(TAG, "===========================================");
+    } else {
+        uart_send_line("OK: Sweep complete. Servos returned to center.");
+        ESP_LOGI(TAG, "===========================================");
+        ESP_LOGI(TAG, "SWEEP COMPLETE!");
+        ESP_LOGI(TAG, "===========================================");
+    }
 
-    sweep_in_progress = false;
+    // Clear the task handle so do_sweep() knows no sweep is running anymore
+    sweep_task_handle = NULL;
+
+    // FreeRTOS tasks must delete themselves when done — never just return
+    vTaskDelete(NULL);
+}
+
+// Called to kick off a sweep — launches sweep_task in the background and returns immediately
+// This is what keeps UART responsive so STOP/PAUSE can be received during a sweep
+static void do_sweep(void) {
+    // Don't start a second sweep if one is already running
+    if (sweep_task_handle != NULL) {
+        uart_send_line("WARNING: Sweep already running. Send STOP first.");
+        return;
+    }
+
+    // Clear any leftover flags from a previous run
+    stop_requested  = false;
+    pause_requested = false;
+
+    // Launch the sweep as a separate FreeRTOS task (4KB stack, priority 5)
+    // xTaskCreate returns immediately — sweep runs in the background
+    xTaskCreate(sweep_task, "sweep_task", 4096, NULL, 5, &sweep_task_handle);
+    uart_send_line("Sweep started. Send PAUSE to freeze, STOP to abort.");
 }
 
 /* =========================================================
@@ -447,6 +553,9 @@ static void test_tilt_range(void) {
      PANUS:1500    → Move pan servo to 1500µs
      TILTUS:1200   → Move tilt servo to 1200µs
      CENTER        → Move both servos to center
+     STOP          → Stop sweep immediately and return to center
+     PAUSE         → Freeze servos in place during a sweep
+     RESUME        → Continue sweep from where it paused
      TESTPAN       → Run the pan range test
      TESTTILT      → Run the tilt range test
      SWEEP         → Run the full sweep pattern
@@ -468,6 +577,9 @@ static void print_help(void) {
     uart_send_line("  PANUS:<value>     - Set pan position (e.g., PANUS:1500)");
     uart_send_line("  TILTUS:<value>    - Set tilt position (e.g., TILTUS:1500)");
     uart_send_line("  CENTER            - Move both servos to center");
+    uart_send_line("  STOP              - Stop sweep immediately and return to center");
+    uart_send_line("  PAUSE             - Freeze servos in place during sweep");
+    uart_send_line("  RESUME            - Continue sweep from where it paused");
     uart_send_line("  TESTPAN           - Test pan servo range");
     uart_send_line("  TESTTILT          - Test tilt servo range");
     uart_send_line("  SWEEP             - Execute pan/tilt sweep pattern");
@@ -508,6 +620,35 @@ static void handle_command(char *line) {
         center_both();
         uart_send_line("OK: Centered");
 
+    } else if (strcmp(line, "STOP") == 0) {
+        // Set the flag — sweep_task checks this at every tilt step and will
+        // exit and return to center within one tilt step (~100ms worst case)
+        if (sweep_task_handle != NULL) {
+            pause_requested = false; // Clear pause so the sweep loop wakes up and sees STOP
+            stop_requested  = true;
+            uart_send_line("STOP sent — servos returning to center...");
+        } else {
+            uart_send_line("No sweep running.");
+        }
+
+    } else if (strcmp(line, "PAUSE") == 0) {
+        // Freeze the sweep in place — servos hold their current position
+        if (sweep_task_handle != NULL) {
+            pause_requested = true;
+            uart_send_line("PAUSE sent — servos will freeze at current position.");
+        } else {
+            uart_send_line("No sweep running.");
+        }
+
+    } else if (strcmp(line, "RESUME") == 0) {
+        // Clear the pause flag — sweep_task wakes up and continues from where it was
+        if (sweep_task_handle != NULL) {
+            pause_requested = false;
+            uart_send_line("RESUME sent.");
+        } else {
+            uart_send_line("No sweep running.");
+        }
+
     } else if (strcmp(line, "TESTPAN") == 0) {
         test_pan_range();
         uart_send_line("OK: Pan test complete");
@@ -517,9 +658,7 @@ static void handle_command(char *line) {
         uart_send_line("OK: Tilt test complete");
 
     } else if (strcmp(line, "SWEEP") == 0) {
-        uart_send_line("Starting sweep...");
-        do_sweep();
-        uart_send_line("OK: Sweep complete");
+        do_sweep(); // Launches sweep in background — returns immediately so UART stays live
 
     } else if (strcmp(line, "HELP") == 0) {
         print_help();
@@ -568,6 +707,9 @@ static void uart_task(void *arg) {
    Each function corresponds to one URL endpoint:
    
      POST /sweep          → run the sweep pattern
+     POST /stop           → stop sweep and return to center
+     POST /pause          → freeze servos in place
+     POST /resume         → continue sweep from paused position
      POST /center         → center both servos
      POST /pan?us=1500    → move pan to 1500µs
      POST /tilt?us=1200   → move tilt to 1200µs
@@ -594,13 +736,59 @@ static esp_err_t options_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// POST /sweep — triggers the full pan+tilt sweep pattern
+// POST /sweep — launches sweep in background, returns immediately
 static esp_err_t sweep_handler(httpd_req_t *req) {
     set_cors_headers(req);
     ESP_LOGI(TAG, "HTTP: Sweep command received");
     do_sweep();
     httpd_resp_set_type(req, "text/plain");
-    httpd_resp_send(req, "OK", 2);
+    httpd_resp_send(req, "OK: Sweep started", 17);
+    return ESP_OK;
+}
+
+// POST /stop — stops the sweep and returns servos to center
+static esp_err_t stop_handler(httpd_req_t *req) {
+    set_cors_headers(req);
+    ESP_LOGI(TAG, "HTTP: Stop command received");
+    if (sweep_task_handle != NULL) {
+        pause_requested = false;
+        stop_requested  = true;
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "OK: Stopping", 12);
+    } else {
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "OK: No sweep running", 20);
+    }
+    return ESP_OK;
+}
+
+// POST /pause — freezes servos at current position
+static esp_err_t pause_handler(httpd_req_t *req) {
+    set_cors_headers(req);
+    ESP_LOGI(TAG, "HTTP: Pause command received");
+    if (sweep_task_handle != NULL) {
+        pause_requested = true;
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "OK: Paused", 10);
+    } else {
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "OK: No sweep running", 20);
+    }
+    return ESP_OK;
+}
+
+// POST /resume — continues sweep from where it paused
+static esp_err_t resume_handler(httpd_req_t *req) {
+    set_cors_headers(req);
+    ESP_LOGI(TAG, "HTTP: Resume command received");
+    if (sweep_task_handle != NULL) {
+        pause_requested = false;
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "OK: Resumed", 11);
+    } else {
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_send(req, "OK: No sweep running", 20);
+    }
     return ESP_OK;
 }
 
@@ -659,9 +847,11 @@ static esp_err_t tilt_handler(httpd_req_t *req) {
 static esp_err_t status_handler(httpd_req_t *req) {
     set_cors_headers(req);
     char response[128];
+    const char *status = sweep_task_handle == NULL ? "ready" :
+                         pause_requested           ? "paused" : "sweeping";
     snprintf(response, sizeof(response),
-             "{\"status\":\"ready\",\"pan_range\":[%d,%d],\"tilt_range\":[%d,%d]}",
-             PAN_MIN_US, PAN_MAX_US, TILT_MIN_US, TILT_MAX_US);
+             "{\"status\":\"%s\",\"pan_range\":[%d,%d],\"tilt_range\":[%d,%d]}",
+             status, PAN_MIN_US, PAN_MAX_US, TILT_MIN_US, TILT_MAX_US);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, response, strlen(response));
     return ESP_OK;
@@ -678,6 +868,8 @@ static httpd_handle_t start_http_server(void) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = HTTP_SERVER_PORT;
     config.lru_purge_enable = true; // Automatically free old connections if too many open
+    config.max_open_sockets = 7;   // ← add this
+    config.max_uri_handlers = 20;  // ← add this (you have a lot of routes)
 
     ESP_LOGI(TAG, "Starting HTTP server on port %d", config.server_port);
 
@@ -688,6 +880,27 @@ static httpd_handle_t start_http_server(void) {
 
         httpd_uri_t sweep_options = { .uri="/sweep", .method=HTTP_OPTIONS, .handler=options_handler };
         httpd_register_uri_handler(server, &sweep_options);
+
+        // /stop endpoint — same idea as typing STOP in the serial monitor
+        httpd_uri_t stop_uri = { .uri="/stop", .method=HTTP_POST, .handler=stop_handler };
+        httpd_register_uri_handler(server, &stop_uri);
+
+        httpd_uri_t stop_options = { .uri="/stop", .method=HTTP_OPTIONS, .handler=options_handler };
+        httpd_register_uri_handler(server, &stop_options);
+
+        // /pause endpoint — freezes servos in place
+        httpd_uri_t pause_uri = { .uri="/pause", .method=HTTP_POST, .handler=pause_handler };
+        httpd_register_uri_handler(server, &pause_uri);
+
+        httpd_uri_t pause_options = { .uri="/pause", .method=HTTP_OPTIONS, .handler=options_handler };
+        httpd_register_uri_handler(server, &pause_options);
+
+        // /resume endpoint — continues sweep from paused position
+        httpd_uri_t resume_uri = { .uri="/resume", .method=HTTP_POST, .handler=resume_handler };
+        httpd_register_uri_handler(server, &resume_uri);
+
+        httpd_uri_t resume_options = { .uri="/resume", .method=HTTP_OPTIONS, .handler=options_handler };
+        httpd_register_uri_handler(server, &resume_options);
 
         httpd_uri_t center_uri = { .uri="/center", .method=HTTP_POST, .handler=center_handler };
         httpd_register_uri_handler(server, &center_uri);
