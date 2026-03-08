@@ -47,4 +47,58 @@ echo "Starting remembR server..."
 echo "  Press Ctrl+C to stop"
 echo ""
 
+# Determine target port from CLI args (default: 8000)
+PORT=8000
+PREV=""
+for arg in "$@"; do
+    if [ "$PREV" = "--port" ]; then
+        PORT="$arg"
+        PREV=""
+        continue
+    fi
+
+    case "$arg" in
+        --port=*)
+            PORT="${arg#--port=}"
+            ;;
+        --port)
+            PREV="--port"
+            ;;
+    esac
+done
+
+# Kill any process holding the Hailo device (prevents HAILO_OUT_OF_PHYSICAL_DEVICES).
+_kill_pids() {
+    local label="$1"; shift
+    local pids="$*"
+    [ -z "$pids" ] && return
+    echo "  Stopping $label (PID $pids)..."
+    kill $pids 2>/dev/null || true
+    sleep 1
+    # Force-kill if still alive
+    local still=""
+    for p in $pids; do
+        kill -0 "$p" 2>/dev/null && still="$still $p" || true
+    done
+    [ -n "$still" ] && kill -9 $still 2>/dev/null || true
+}
+
+if [ -e /dev/hailo0 ]; then
+    HAILO_PIDS="$(fuser /dev/hailo0 2>/dev/null || true)"
+    _kill_pids "Hailo device holder" $HAILO_PIDS
+fi
+
+# Kill anything currently listening on ports 8000 and 8001
+# (catches both the target port and the other common remembR port).
+if command -v lsof >/dev/null 2>&1; then
+    for _port in 8000 8001 "$PORT"; do
+        _pids="$(lsof -tiTCP:"$_port" -sTCP:LISTEN 2>/dev/null || true)"
+        [ -z "$_pids" ] && continue
+        _label="process on port $_port"
+        _kill_pids "$_label" $_pids
+    done
+else
+    echo "WARNING: lsof not found; cannot auto-stop existing processes."
+fi
+
 python3 -m src.main "$@"
