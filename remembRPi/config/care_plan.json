@@ -1,0 +1,43 @@
+{
+  "plan_id": "demo-care-plan-001",
+  "patient_name": "Demo User",
+  "updated_at": "2026-03-07T12:00:00Z",
+  "notes": "This is a demo care plan for hackathon purposes only. Not real medical data.",
+  "medications": [
+    {
+      "name": "Metformin",
+      "dosage": "500mg",
+      "schedule": "Morning",
+      "barcodes": ["049281003623", "NDC-00228-2657"],
+      "notes": "Take with breakfast"
+    },
+    {
+      "name": "Lisinopril",
+      "dosage": "10mg",
+      "schedule": "Morning",
+      "barcodes": ["300651465309", "NDC-00071-3770"],
+      "notes": "Blood pressure"
+    },
+    {
+      "name": "Atorvastatin",
+      "dosage": "20mg",
+      "schedule": "Evening",
+      "barcodes": ["000781216131", "NDC-00378-3950"],
+      "notes": "Take with dinner"
+    },
+    {
+      "name": "Aspirin",
+      "dosage": "81mg",
+      "schedule": "Morning",
+      "barcodes": ["312843536067", "041100811691"],
+      "notes": "Low-dose daily"
+    },
+    {
+      "name": "Vitamin D3",
+      "dosage": "2000 IU",
+      "schedule": "Morning",
+      "barcodes": ["078742211282", "076950453302"],
+      "notes": "Supplement"
+    }
+  ]
+}

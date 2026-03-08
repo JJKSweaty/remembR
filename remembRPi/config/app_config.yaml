@@ -93,3 +93,23 @@ logging:
   file: "data/logs/remembr.log"
   max_bytes: 10485760  # 10MB
   backup_count: 3
+
+# --- New services ---
+
+esp32:
+  # ESP32-S3 pan-tilt controller WiFi IP
+  host: "192.168.1.135"
+  port: 8080
+  sweep_timeout: 30.0
+
+barcode:
+  # Set to /dev/input/eventX if auto-detect fails, or leave null for API-only mode
+  device: null
+
+care_plan:
+  path: "config/care_plan.json"
+
+lidar:
+  enabled: false
+  port: "/dev/ttyAMA0"
+  baudrate: 115200

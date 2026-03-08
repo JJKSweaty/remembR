@@ -21,6 +21,8 @@ from src.api.schemas import (
     HealthResponse, ObjectsResponse, ObjectInfo, BoundingBox,
     FindRequest, FindResponse, SnapshotResponse,
     CommandRequest, CommandResponse, StatusResponse,
+    MedScanRequest, MedScanResponse, CarePlanResponse,
+    SweepResponse, PanTiltMoveRequest,
 )
 from src.memory.object_memory import ObjectRecord
 from src.utils.logging_utils import get_logger
@@ -111,14 +113,32 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
 
     The phone app sends an object name (e.g., "wallet", "phone") and the
     backend searches current and recent memory for that object class.
+    Optionally triggers a pan-tilt sweep before searching.
     """
     finder = request.app.state.finder
     runner = getattr(request.app.state, "hailo_runner", None)
     snapshot_dir = getattr(request.app.state, "snapshot_dir", "data/snapshots")
+    pan_tilt = getattr(request.app.state, "pan_tilt_service", None)
+    lidar = getattr(request.app.state, "lidar_service", None)
+    esp32_state = getattr(request.app.state, "esp32_state_service", None)
 
-    # Try to capture a snapshot if the object is currently visible
+    # Set companion state to searching
+    if esp32_state:
+        await esp32_state.set_state("searching")
+
+    # Trigger sweep if requested and pan-tilt is available
+    if body.sweep and pan_tilt and pan_tilt.available:
+        await pan_tilt.sweep()
+
     snapshot_url = None
     result = finder.find(body.label)
+
+    # Add LiDAR distance if available
+    if lidar and lidar.available:
+        dist_info = lidar.get_distance()
+        if dist_info.get("distance_m") is not None:
+            result["distance_m"] = dist_info["distance_m"]
+            result["distance_text"] = dist_info["distance_text"]
 
     if result.get("found_now") and runner:
         frame = runner.get_latest_frame()
@@ -126,7 +146,101 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
             snapshot_url = _save_snapshot(frame, body.label, snapshot_dir, request)
             result["snapshot_url"] = snapshot_url
 
+    # Set companion state based on result
+    if esp32_state:
+        if result.get("found_now"):
+            await esp32_state.set_state("found")
+        else:
+            await esp32_state.set_state("idle")
+
     return FindResponse(**result)
+
+
+# ---- Medication verification ----
+
+@router.post("/med/scan", response_model=MedScanResponse)
+async def med_scan(request: Request, body: MedScanRequest) -> MedScanResponse:
+    """Verify a medication barcode or name against the care plan.
+
+    Accepts either a barcode string or medication name.
+    Returns match/mismatch/uncertain with a safety notice.
+
+    This endpoint NEVER diagnoses, prescribes, or tells the user to take
+    or skip medication.
+    """
+    care_plan = getattr(request.app.state, "care_plan_service", None)
+    if care_plan is None:
+        return MedScanResponse(
+            status="uncertain",
+            safety_notice="Please confirm with your caregiver, pharmacist, or clinician.",
+            message="Medication verification service is not available.",
+        )
+
+    if body.barcode:
+        result = care_plan.verify_barcode(body.barcode)
+    elif body.medication_name:
+        result = care_plan.verify_name(body.medication_name)
+    else:
+        return MedScanResponse(
+            status="uncertain",
+            safety_notice="Please confirm with your caregiver, pharmacist, or clinician.",
+            message="Please provide a barcode or medication name to verify.",
+        )
+
+    return MedScanResponse(**result)
+
+
+@router.get("/med/plan", response_model=CarePlanResponse)
+async def get_care_plan(request: Request) -> CarePlanResponse:
+    """Get the current care plan summary (medication list)."""
+    care_plan = getattr(request.app.state, "care_plan_service", None)
+    if care_plan is None:
+        return CarePlanResponse(loaded=False)
+    return CarePlanResponse(**care_plan.get_plan_summary())
+
+
+# ---- Pan-tilt control ----
+
+@router.post("/pantilt/sweep", response_model=SweepResponse)
+async def sweep(request: Request) -> SweepResponse:
+    """Trigger a full pan-tilt room sweep."""
+    pan_tilt = getattr(request.app.state, "pan_tilt_service", None)
+    if pan_tilt is None or not pan_tilt.available:
+        return SweepResponse(status="unavailable", message="Pan-tilt controller not connected")
+
+    esp32_state = getattr(request.app.state, "esp32_state_service", None)
+    if esp32_state:
+        await esp32_state.set_state("searching")
+
+    result = await pan_tilt.sweep()
+
+    if esp32_state:
+        await esp32_state.set_state("idle")
+
+    return SweepResponse(**result)
+
+
+@router.post("/pantilt/center")
+async def pantilt_center(request: Request):
+    """Center the pan-tilt servos."""
+    pan_tilt = getattr(request.app.state, "pan_tilt_service", None)
+    if pan_tilt is None or not pan_tilt.available:
+        return {"status": "unavailable", "message": "Pan-tilt controller not connected"}
+    return await pan_tilt.center()
+
+
+@router.post("/pantilt/move")
+async def pantilt_move(request: Request, body: PanTiltMoveRequest):
+    """Move pan and/or tilt to specific positions (microseconds)."""
+    pan_tilt = getattr(request.app.state, "pan_tilt_service", None)
+    if pan_tilt is None or not pan_tilt.available:
+        return {"status": "unavailable", "message": "Pan-tilt controller not connected"}
+    results = {}
+    if body.pan_us is not None:
+        results["pan"] = await pan_tilt.set_pan(body.pan_us)
+    if body.tilt_us is not None:
+        results["tilt"] = await pan_tilt.set_tilt(body.tilt_us)
+    return {"status": "ok", "results": results}
 
 
 @router.get("/snapshots/{snapshot_id}")
@@ -185,6 +299,11 @@ async def status(request: Request) -> StatusResponse:
     runner = getattr(app_state, "hailo_runner", None)
     memory = getattr(app_state, "memory", None)
     start_time = getattr(app_state, "start_time", time.time())
+    pan_tilt = getattr(app_state, "pan_tilt_service", None)
+    barcode = getattr(app_state, "barcode_service", None)
+    care_plan = getattr(app_state, "care_plan_service", None)
+    lidar = getattr(app_state, "lidar_service", None)
+    esp32_state = getattr(app_state, "esp32_state_service", None)
 
     import socket
     return StatusResponse(
@@ -199,7 +318,7 @@ async def status(request: Request) -> StatusResponse:
             "pipeline_running": runner.is_running if runner else False,
         },
         hailo={
-            "available": True,  # If we got this far
+            "available": True,
             "pipeline_running": runner.is_running if runner else False,
         },
         memory={
@@ -207,6 +326,11 @@ async def status(request: Request) -> StatusResponse:
             "currently_visible": len(memory.get_current_objects()) if memory else 0,
             "recently_seen": len(memory.get_recent_objects()) if memory else 0,
         },
+        pan_tilt=pan_tilt.to_status_dict() if pan_tilt else {},
+        barcode=barcode.to_status_dict() if barcode else {},
+        care_plan=care_plan.to_status_dict() if care_plan else {},
+        lidar=lidar.to_status_dict() if lidar else {},
+        companion=esp32_state.to_status_dict() if esp32_state else {},
     )
 
 
