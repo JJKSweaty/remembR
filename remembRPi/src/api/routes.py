@@ -329,6 +329,136 @@ async def command(request: Request, body: CommandRequest) -> CommandResponse:
         )
 
 
+# ---- Barcode scanning (camera-based) ----
+
+@router.post("/scan/camera")
+async def scan_camera(request: Request):
+    """Scan for barcodes using the camera frame.
+
+    Grabs the latest frame from the Hailo pipeline, decodes any barcodes
+    using pyzbar, and returns the result. Test from CLI:
+        curl -X POST http://localhost:8000/scan/camera
+    """
+    runner = getattr(request.app.state, "hailo_runner", None)
+    if not runner:
+        return {"status": "error", "message": "No active camera pipeline"}
+
+    frame = runner.get_latest_frame()
+    if frame is None:
+        return {"status": "error", "message": "No camera frame available"}
+
+    try:
+        from pyzbar.pyzbar import decode as pyzbar_decode
+
+        if len(frame.shape) == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = frame
+
+        barcodes = pyzbar_decode(gray)
+    except ImportError:
+        return {"status": "error", "message": "pyzbar not installed"}
+    except Exception as e:
+        return {"status": "error", "message": f"Barcode decode failed: {e}"}
+
+    if not barcodes:
+        return {
+            "status": "no_barcode",
+            "message": "No barcode detected in camera view.",
+        }
+
+    results = []
+    for bc in barcodes:
+        results.append({
+            "data": bc.data.decode("utf-8", errors="replace"),
+            "type": bc.type,
+            "rect": {"x": bc.rect.left, "y": bc.rect.top,
+                     "w": bc.rect.width, "h": bc.rect.height},
+        })
+
+    return {
+        "status": "found",
+        "count": len(results),
+        "barcodes": results,
+    }
+
+
+@router.get("/scan/debug")
+async def scan_debug(request: Request):
+    """Capture a frame, attempt barcode decode, save annotated snapshot.
+
+    Returns the barcode results plus a snapshot URL so you can see
+    what the camera captured. Test from CLI:
+        curl http://localhost:8000/scan/debug
+    Then view the snapshot at the returned snapshot_url.
+    """
+    runner = getattr(request.app.state, "hailo_runner", None)
+    if not runner:
+        return {"status": "error", "message": "No active camera pipeline"}
+
+    frame = runner.get_latest_frame()
+    if frame is None:
+        return {"status": "error", "message": "No camera frame available"}
+
+    snapshot_dir = getattr(request.app.state, "snapshot_dir", "data/snapshots")
+    barcode_results = []
+
+    try:
+        from pyzbar.pyzbar import decode as pyzbar_decode
+
+        if len(frame.shape) == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = frame
+
+        barcodes = pyzbar_decode(gray)
+
+        # Draw barcode bounding boxes on the frame for the snapshot
+        annotated = frame.copy()
+        for bc in barcodes:
+            r = bc.rect
+            cv2.rectangle(annotated, (r.left, r.top),
+                         (r.left + r.width, r.top + r.height),
+                         (0, 255, 0), 3)
+            bc_text = bc.data.decode("utf-8", errors="replace")
+            cv2.putText(annotated, f"{bc.type}: {bc_text}",
+                       (r.left, r.top - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            barcode_results.append({
+                "data": bc_text,
+                "type": bc.type,
+            })
+
+        snapshot_url = _save_snapshot(annotated, "barcode_debug", snapshot_dir,
+                                     request, quality=90)
+
+    except ImportError:
+        snapshot_url = _save_snapshot(frame, "barcode_debug", snapshot_dir,
+                                     request, quality=90)
+        return {
+            "status": "error",
+            "message": "pyzbar not installed",
+            "snapshot_url": snapshot_url,
+        }
+    except Exception as e:
+        snapshot_url = _save_snapshot(frame, "barcode_debug", snapshot_dir,
+                                     request, quality=90)
+        return {
+            "status": "error",
+            "message": f"Barcode decode failed: {e}",
+            "snapshot_url": snapshot_url,
+        }
+
+    return {
+        "status": "found" if barcode_results else "no_barcode",
+        "count": len(barcode_results),
+        "barcodes": barcode_results,
+        "snapshot_url": snapshot_url,
+        "message": f"Found {len(barcode_results)} barcode(s)" if barcode_results
+                   else "No barcode detected. Check snapshot to see camera view.",
+    }
+
+
 @router.get("/status", response_model=StatusResponse)
 async def status(request: Request) -> StatusResponse:
     """Detailed system status for network debugging."""

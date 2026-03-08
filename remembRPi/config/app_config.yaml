@@ -9,7 +9,7 @@ camera:
   device: "auto"
   width: 1920
   height: 1080
-  frame_rate: 30
+  frame_rate: 15
 
 hailo:
   # Path to hailo-rpi5-examples repo
@@ -51,8 +51,9 @@ detection:
     remote: 0.50
     handbag: 0.40
   # Debounce: object must appear in min_hits/window frames to be confirmed
+  # Tuned for 15fps pipeline: 2 hits in 5 frames confirms faster
   debounce_window: 5
-  debounce_min_hits: 3
+  debounce_min_hits: 2
   # Min bounding box area ratio (fraction of frame area)
   min_bbox_area_ratio: 0.008
 
