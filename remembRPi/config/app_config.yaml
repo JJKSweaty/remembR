@@ -15,7 +15,7 @@ hailo:
   # Path to hailo-rpi5-examples repo
   examples_path: "/home/jjk/hailo-rpi5-examples"
   # Model to use (h8l variant for Hailo-8L on RPi5 AI HAT+)
-  model: "yolov8m"
+  model: "yolov8s"
   # Architecture auto-detected from device
   arch: "auto"
   # NMS thresholds
@@ -44,9 +44,8 @@ detection:
     - "chair"
     - "bowl"
     - "vase"
-  # Per-label confidence overrides
+  # Per-label confidence overrides (omit to use default confidence_threshold)
   label_thresholds:
-    cell phone: 0.55
     bottle: 0.45
     cup: 0.50
     remote: 0.50
