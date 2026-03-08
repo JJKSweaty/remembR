@@ -21,7 +21,7 @@ from pathlib import Path
 from src.utils.logging_utils import get_logger
 
 try:
-    from hailo_apps.hailo_app_python.apps.detection_simple.detection_pipeline_simple import (
+    from hailo_apps.hailo_app_python.apps.detection.detection_pipeline import (
         GStreamerDetectionApp,
     )
     HAILO_PIPELINE_AVAILABLE = True
@@ -159,7 +159,7 @@ class HailoDetectionApp:
             sys.argv = [
                 "remembr_detection",
                 "--input", self._camera_device,
-                "--frame-rate", "15",
+                "--frame-rate", "30",
             ]
             if self._use_frame:
                 sys.argv.append("--use-frame")

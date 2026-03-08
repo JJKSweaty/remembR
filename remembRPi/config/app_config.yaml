@@ -14,8 +14,8 @@ camera:
 hailo:
   # Path to hailo-rpi5-examples repo
   examples_path: "/home/jjk/hailo-rpi5-examples"
-  # Model used by the simple detection pipeline (yolov6n)
-  model: "yolov6n"
+  # Model to use (yolov8s for Hailo-8L on RPi5 AI HAT+)
+  model: "yolov8s"
   # Architecture auto-detected from device
   arch: "auto"
   # NMS thresholds
