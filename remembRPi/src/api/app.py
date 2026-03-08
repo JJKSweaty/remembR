@@ -33,6 +33,11 @@ from src.transport.message_router import MessageRouter
 from src.transport.tailscale_utils import print_connection_info
 from src.camera.usb_camera_detect import get_best_usb_camera, validate_camera
 from src.utils.logging_utils import setup_logging, get_logger
+from src.services.pan_tilt_service import PanTiltService
+from src.services.barcode_service import BarcodeService
+from src.services.care_plan_service import CarePlanService
+from src.services.lidar_service import LidarService
+from src.services.esp32_state_service import ESP32StateService
 
 
 def load_config(config_path: str = "config/app_config.yaml") -> dict:
@@ -112,6 +117,47 @@ def create_app(config: dict | None = None) -> FastAPI:
     server_cfg = config.get("server", {})
     port = server_cfg.get("port", 8000)
 
+    # Initialize new services
+    esp32_cfg = config.get("esp32", {})
+    esp32_host = esp32_cfg.get("host", "192.168.1.135")
+    esp32_port = esp32_cfg.get("port", 8080)
+
+    pan_tilt_service = PanTiltService(
+        esp32_host=esp32_host,
+        esp32_port=esp32_port,
+        timeout=esp32_cfg.get("sweep_timeout", 30.0),
+    )
+    care_plan_service = CarePlanService(
+        care_plan_path=config.get("care_plan", {}).get("path", "config/care_plan.json"),
+    )
+
+    # Barcode scanner: wire physical scans directly to care plan + WS broadcast
+    def _on_physical_barcode(barcode: str) -> None:
+        """Called by BarcodeService when the physical scanner reads a barcode.
+        Verifies against care plan and pushes result to all WebSocket clients."""
+        result = care_plan_service.verify_barcode(barcode)
+        result["type"] = "med_scan_result"
+        loop = app_state.get("event_loop")
+        if loop and ws_manager.client_count > 0:
+            asyncio.run_coroutine_threadsafe(
+                ws_manager.broadcast(result),
+                loop,
+            )
+
+    barcode_service = BarcodeService(
+        device_path=config.get("barcode", {}).get("device"),
+        on_scan=_on_physical_barcode,
+    )
+    lidar_cfg = config.get("lidar", {})
+    lidar_service = LidarService(
+        port=lidar_cfg.get("port", "/dev/ttyAMA0"),
+        baudrate=lidar_cfg.get("baudrate", 115200),
+    )
+    esp32_state_service = ESP32StateService(
+        esp32_host=esp32_host,
+        esp32_port=esp32_port,
+    )
+
     # Store all state for access from routes and WebSocket handlers
     app_state = {
         "config": config,
@@ -128,6 +174,11 @@ def create_app(config: dict | None = None) -> FastAPI:
         "start_time": time.time(),
         "port": port,
         "event_loop": None,
+        "pan_tilt_service": pan_tilt_service,
+        "barcode_service": barcode_service,
+        "care_plan_service": care_plan_service,
+        "lidar_service": lidar_service,
+        "esp32_state_service": esp32_state_service,
     }
 
     @asynccontextmanager
@@ -151,6 +202,21 @@ def create_app(config: dict | None = None) -> FastAPI:
 
         # Start persistence background thread
         persistence.start()
+
+        # Initialize new services (non-blocking, graceful degradation)
+        # Care plan
+        care_plan_service.load()
+
+        # ESP32 pan-tilt connection check
+        await pan_tilt_service.check_connection()
+        esp32_state_service.set_available(pan_tilt_service.available)
+
+        # Barcode scanner (optional hardware)
+        barcode_service.start()
+
+        # LiDAR (optional hardware)
+        if lidar_cfg.get("enabled", False):
+            lidar_service.start()
 
         # Start Hailo detection pipeline if camera is available
         if camera_device:
@@ -198,6 +264,8 @@ def create_app(config: dict | None = None) -> FastAPI:
         runner = app.state.hailo_runner
         if runner:
             runner.stop()
+        barcode_service.stop()
+        lidar_service.stop()
         persistence.stop()
         log.info("remembR stopped")
 
@@ -274,8 +342,53 @@ def create_app(config: dict | None = None) -> FastAPI:
         return {"type": "error", "message": "Failed to capture snapshot"}
 
     msg_router.register("find", handle_find)
+    msg_router.register("find_object", handle_find)  # alias
     msg_router.register("get_current_objects", handle_get_current)
     msg_router.register("capture_snapshot", handle_capture_snapshot)
+
+    # New WebSocket handlers for MVP
+
+    async def handle_get_recent_objects(websocket: WebSocket, message: dict) -> dict:
+        within = message.get("within", 300)
+        objects = memory.get_recent_objects(within_seconds=within)
+        return {
+            "type": "recent_objects",
+            "objects": [o.to_dict() for o in objects],
+            "within_seconds": within,
+            "timestamp": time.time(),
+        }
+
+    async def handle_start_med_scan(websocket: WebSocket, message: dict) -> dict:
+        barcode = message.get("barcode")
+        medication_name = message.get("medication_name")
+
+        if barcode:
+            result = care_plan_service.verify_barcode(barcode)
+        elif medication_name:
+            result = care_plan_service.verify_name(medication_name)
+        else:
+            return {
+                "type": "med_scan_result",
+                "status": "uncertain",
+                "safety_notice": "Please confirm with your caregiver, pharmacist, or clinician.",
+                "message": "Please provide a barcode or medication name.",
+            }
+
+        result["type"] = "med_scan_result"
+        return result
+
+    async def handle_sweep(websocket: WebSocket, message: dict) -> dict:
+        if not pan_tilt_service.available:
+            return {"type": "error", "message": "Pan-tilt controller not connected"}
+        await esp32_state_service.set_state("searching")
+        result = await pan_tilt_service.sweep()
+        await esp32_state_service.set_state("idle")
+        result["type"] = "sweep_result"
+        return result
+
+    msg_router.register("get_recent_objects", handle_get_recent_objects)
+    msg_router.register("start_med_scan", handle_start_med_scan)
+    msg_router.register("sweep", handle_sweep)
 
     # WebSocket endpoint
     @app.websocket("/ws")
