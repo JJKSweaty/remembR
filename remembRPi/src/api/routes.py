@@ -170,19 +170,39 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
             result["distance_m"] = dist_info["distance_m"]
             result["distance_text"] = dist_info["distance_text"]
 
+    # Resolve the COCO label for snapshot lookup
+    resolved_label = finder.resolve_label(body.label)
+
     # If the object is visible right now, wait 500ms for the frame to
-    # stabilise then take a high-quality snapshot.
+    # stabilise then take a snapshot.
     if result.get("found_now") and runner:
         await asyncio.sleep(0.5)
         frame = runner.get_latest_frame()
         if frame is not None:
             memory = request.app.state.memory
             dn = getattr(request.app.state, "display_names", {})
-            current_objects = memory.get_current_objects()
-            detections = _objects_to_detection_records(current_objects, dn)
+            # Use all recently-seen objects for bounding box drawing
+            all_objects = memory.get_all_objects()
+            recent_objects = [
+                o for o in all_objects
+                if (time.time() - o.last_seen) < 5.0
+            ]
+            detections = _objects_to_detection_records(recent_objects, dn)
             snapshot_url = _save_snapshot(frame, body.label, snapshot_dir, request,
-                                         detections=detections, quality=95)
+                                         detections=detections, quality=65)
             result["snapshot_url"] = snapshot_url
+
+            # Store for subsequent polling
+            latest_snapshots = getattr(request.app.state, "latest_snapshots", {})
+            latest_snapshots[resolved_label] = snapshot_url
+
+    # If we don't have a snapshot_url yet but a previous find stored one,
+    # return it so the mobile app's polling picks it up.
+    if not result.get("snapshot_url"):
+        latest_snapshots = getattr(request.app.state, "latest_snapshots", {})
+        stored_url = latest_snapshots.get(resolved_label)
+        if stored_url:
+            result["snapshot_url"] = stored_url
 
     # Set companion state based on result
     if esp32_state:
@@ -329,14 +349,17 @@ async def command(request: Request, body: CommandRequest) -> CommandResponse:
         )
 
 
-# ---- Barcode scanning (camera-based) ----
+# ---- Barcode scanning (camera-based, with full med verification) ----
 
 @router.post("/scan/camera")
 async def scan_camera(request: Request):
-    """Scan for barcodes using the camera frame.
+    """Scan for barcodes using the camera frame, with full med pipeline.
 
-    Grabs the latest frame from the Hailo pipeline, decodes any barcodes
-    using pyzbar, and returns the result. Test from CLI:
+    Grabs the latest frame from the Hailo pipeline, decodes barcodes
+    (UPC_A, EAN13, CODE128, etc.) using pyzbar, then runs the full
+    drug lookup (openFDA + UPCitemdb) and care plan verification.
+
+    Test from CLI:
         curl -X POST http://localhost:8000/scan/camera
     """
     runner = getattr(request.app.state, "hailo_runner", None)
@@ -367,28 +390,56 @@ async def scan_camera(request: Request):
             "message": "No barcode detected in camera view.",
         }
 
-    results = []
-    for bc in barcodes:
-        results.append({
-            "data": bc.data.decode("utf-8", errors="replace"),
-            "type": bc.type,
-            "rect": {"x": bc.rect.left, "y": bc.rect.top,
-                     "w": bc.rect.width, "h": bc.rect.height},
-        })
+    # Use the first barcode found
+    bc = barcodes[0]
+    barcode_data = bc.data.decode("utf-8", errors="replace")
+    barcode_type = bc.type
 
-    return {
+    result = {
         "status": "found",
-        "count": len(results),
-        "barcodes": results,
+        "barcode": barcode_data,
+        "barcode_type": barcode_type,
     }
+
+    # Drug lookup (openFDA / UPCitemdb)
+    try:
+        from src.services.drug_lookup_service import scan_and_lookup, drug_info_summary
+        import asyncio
+        loop = asyncio.get_event_loop()
+        drug = await loop.run_in_executor(None, scan_and_lookup, barcode_data)
+        if drug:
+            result["drug_info"] = drug
+            result["drug_summary"] = drug_info_summary(drug)
+        else:
+            result["drug_info"] = None
+            result["drug_summary"] = "No drug match found in database."
+    except Exception as e:
+        result["drug_info"] = None
+        result["drug_summary"] = f"Drug lookup failed: {e}"
+
+    # Care plan verification
+    care_plan = getattr(request.app.state, "care_plan_service", None)
+    if care_plan:
+        result["care_plan_check"] = care_plan.verify_barcode(barcode_data)
+    else:
+        result["care_plan_check"] = {"status": "unavailable",
+                                     "message": "No care plan loaded"}
+
+    # Also list all barcodes found (in case multiple)
+    result["all_barcodes"] = [
+        {"data": b.data.decode("utf-8", errors="replace"), "type": b.type}
+        for b in barcodes
+    ]
+
+    return result
 
 
 @router.get("/scan/debug")
 async def scan_debug(request: Request):
-    """Capture a frame, attempt barcode decode, save annotated snapshot.
+    """Capture a frame, attempt barcode decode + med lookup, save snapshot.
 
-    Returns the barcode results plus a snapshot URL so you can see
-    what the camera captured. Test from CLI:
+    Returns the barcode results, drug info, care plan check, plus a
+    snapshot URL so you can see what the camera captured. Test from CLI:
         curl http://localhost:8000/scan/debug
     Then view the snapshot at the returned snapshot_url.
     """
@@ -401,7 +452,8 @@ async def scan_debug(request: Request):
         return {"status": "error", "message": "No camera frame available"}
 
     snapshot_dir = getattr(request.app.state, "snapshot_dir", "data/snapshots")
-    barcode_results = []
+    barcode_data = None
+    barcode_type = None
 
     try:
         from pyzbar.pyzbar import decode as pyzbar_decode
@@ -424,17 +476,17 @@ async def scan_debug(request: Request):
             cv2.putText(annotated, f"{bc.type}: {bc_text}",
                        (r.left, r.top - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            barcode_results.append({
-                "data": bc_text,
-                "type": bc.type,
-            })
+
+        if barcodes:
+            barcode_data = barcodes[0].data.decode("utf-8", errors="replace")
+            barcode_type = barcodes[0].type
 
         snapshot_url = _save_snapshot(annotated, "barcode_debug", snapshot_dir,
-                                     request, quality=90)
+                                     request, quality=60)
 
     except ImportError:
         snapshot_url = _save_snapshot(frame, "barcode_debug", snapshot_dir,
-                                     request, quality=90)
+                                     request, quality=60)
         return {
             "status": "error",
             "message": "pyzbar not installed",
@@ -442,21 +494,56 @@ async def scan_debug(request: Request):
         }
     except Exception as e:
         snapshot_url = _save_snapshot(frame, "barcode_debug", snapshot_dir,
-                                     request, quality=90)
+                                     request, quality=60)
         return {
             "status": "error",
             "message": f"Barcode decode failed: {e}",
             "snapshot_url": snapshot_url,
         }
 
-    return {
-        "status": "found" if barcode_results else "no_barcode",
-        "count": len(barcode_results),
-        "barcodes": barcode_results,
+    if not barcode_data:
+        return {
+            "status": "no_barcode",
+            "snapshot_url": snapshot_url,
+            "message": "No barcode detected. Check snapshot to see camera view.",
+        }
+
+    # Full med pipeline: drug lookup + care plan
+    result = {
+        "status": "found",
+        "barcode": barcode_data,
+        "barcode_type": barcode_type,
         "snapshot_url": snapshot_url,
-        "message": f"Found {len(barcode_results)} barcode(s)" if barcode_results
-                   else "No barcode detected. Check snapshot to see camera view.",
     }
+
+    try:
+        from src.services.drug_lookup_service import scan_and_lookup, drug_info_summary
+        import asyncio
+        loop = asyncio.get_event_loop()
+        drug = await loop.run_in_executor(None, scan_and_lookup, barcode_data)
+        if drug:
+            result["drug_info"] = drug
+            result["drug_summary"] = drug_info_summary(drug)
+        else:
+            result["drug_info"] = None
+            result["drug_summary"] = "No drug match found in database."
+    except Exception as e:
+        result["drug_info"] = None
+        result["drug_summary"] = f"Drug lookup failed: {e}"
+
+    care_plan = getattr(request.app.state, "care_plan_service", None)
+    if care_plan:
+        result["care_plan_check"] = care_plan.verify_barcode(barcode_data)
+    else:
+        result["care_plan_check"] = {"status": "unavailable",
+                                     "message": "No care plan loaded"}
+
+    result["message"] = (
+        f"Barcode: {barcode_data} ({barcode_type}). "
+        f"Drug: {result['drug_summary']}"
+    )
+
+    return result
 
 
 @router.get("/status", response_model=StatusResponse)
@@ -514,7 +601,8 @@ def _save_snapshot(
     try:
         Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
         timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        snapshot_id = f"{label}_{timestamp_str}_{uuid.uuid4().hex[:6]}.jpg"
+        safe_label = label.replace(" ", "_")
+        snapshot_id = f"{safe_label}_{timestamp_str}_{uuid.uuid4().hex[:6]}.jpg"
         file_path = Path(snapshot_dir) / snapshot_id
 
         # Draw bounding boxes if detections are available

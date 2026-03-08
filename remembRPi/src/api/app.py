@@ -191,6 +191,8 @@ def create_app(config: dict | None = None) -> FastAPI:
         "care_plan_service": care_plan_service,
         "lidar_service": lidar_service,
         "esp32_state_service": esp32_state_service,
+        # Latest snapshot URL per label, so polling POST /find can return it
+        "latest_snapshots": {},
     }
 
     @asynccontextmanager
@@ -235,27 +237,11 @@ def create_app(config: dict | None = None) -> FastAPI:
             try:
                 from src.hailo.hailo_runner import HailoRunner
 
-                def on_detections(records: list[DetectionRecord]):
-                    """Called by memory worker when new detections are processed.
-                    Schedules a WebSocket broadcast on the async event loop."""
-                    loop = app_state.get("event_loop")
-                    if loop and ws_manager.client_count > 0:
-                        objects = []
-                        for r in records:
-                            d = r.to_dict()
-                            d["label"] = display_names.get(d["label"], d["label"])
-                            objects.append(d)
-                        asyncio.run_coroutine_threadsafe(
-                            ws_manager.broadcast_objects_update(objects),
-                            loop,
-                        )
-
                 runner = HailoRunner(
                     memory=memory,
                     camera_device=camera_device,
                     hailo_examples_path=hailo_cfg.get("examples_path"),
                     arch=hailo_cfg.get("arch", "auto"),
-                    on_detections=on_detections,
                 )
 
                 if runner.start():
@@ -301,12 +287,17 @@ def create_app(config: dict | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Mount static files for snapshots
+    # Mount static files
     Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory="static"), name="static_files")
 
-    # Include HTTP routes
+    # Include HTTP routes (must be before snapshot mount so /snapshots/{id} route works)
     app.include_router(router)
+
+    # Mount snapshots directory as static files fallback for serving JPEGs
+    # The route handler in routes.py handles /snapshots/{id} with security checks;
+    # this mount serves as a direct static fallback.
+    app.mount("/snapshots", StaticFiles(directory=snapshot_dir), name="snapshots")
 
     # Register WebSocket message handlers
     async def handle_find(websocket: WebSocket, message: dict) -> dict | None:
@@ -317,7 +308,7 @@ def create_app(config: dict | None = None) -> FastAPI:
 
         # If found now, send the find result immediately so the phone
         # knows we spotted the object, then wait 500ms for the frame to
-        # stabilise and take a high-quality snapshot as a second message.
+        # stabilise and take a snapshot.
         if result.get("found_now"):
             # 1. Send the find result right away
             await ws_manager.send_to(websocket, result)
@@ -331,16 +322,26 @@ def create_app(config: dict | None = None) -> FastAPI:
                 frame = runner.get_latest_frame()
                 if frame is None:
                     return
+
                 from src.api.routes import _save_snapshot, _objects_to_detection_records
-                current_objects = memory.get_current_objects()
-                detections = _objects_to_detection_records(current_objects, display_names)
+                # Get all recently-seen objects for bounding box drawing
+                all_objects = memory.get_all_objects()
+                recent_objects = [
+                    o for o in all_objects
+                    if (time.time() - o.last_seen) < 5.0
+                ]
+                detections = _objects_to_detection_records(recent_objects, display_names)
+
+                # Save snapshot to disk and get URL path
                 url = _save_snapshot(frame, label, snapshot_dir, None,
                                      detections=detections, quality=65)
+
                 if url:
-                    snapshot_id = Path(url).name
+                    # Store for subsequent polling via POST /find
+                    app_state["latest_snapshots"][label] = url
+
                     await ws_manager.send_to(websocket, {
                         "type": "find_snapshot_ready",
-                        "snapshot_id": snapshot_id,
                         "url": url,
                         "label": label,
                         "timestamp": time.time(),

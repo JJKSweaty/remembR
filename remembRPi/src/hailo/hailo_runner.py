@@ -147,13 +147,6 @@ class HailoRunner:
                 if self._on_frame:
                     self._on_frame(frame)
 
-            # Notify detection listeners (e.g., WebSocket broadcast)
-            if records and self._on_detections:
-                try:
-                    self._on_detections(records)
-                except Exception as e:
-                    log.error("Error in on_detections callback: %s", e)
-
             processed_count += 1
             if processed_count % 100 == 0:
                 log.debug(

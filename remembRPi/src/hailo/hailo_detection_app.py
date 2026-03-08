@@ -2,10 +2,10 @@
 Hailo GStreamer detection application for remembR.
 
 Builds and runs the GStreamer detection pipeline using hailo-apps-infra,
-following the pattern from hailo-rpi5-examples/basic_pipelines/detection.py.
+following the pattern from hailo-rpi5-examples/basic_pipelines/detection_simple.py.
 
 The detection pipeline structure is:
-  SOURCE -> INFERENCE_WRAPPER(INFERENCE) -> TRACKER -> identity_callback -> DISPLAY
+  SOURCE -> INFERENCE -> identity_callback -> DISPLAY
 
 The identity_callback element is where our pad probe (app_callback) is attached.
 This is handled automatically by the GStreamerDetectionApp.run() method.
@@ -21,7 +21,7 @@ from pathlib import Path
 from src.utils.logging_utils import get_logger
 
 try:
-    from hailo_apps.hailo_app_python.apps.detection.detection_pipeline import (
+    from hailo_apps.hailo_app_python.apps.detection_simple.detection_pipeline_simple import (
         GStreamerDetectionApp,
     )
     HAILO_PIPELINE_AVAILABLE = True
@@ -192,12 +192,6 @@ class HailoDetectionApp:
                 signal.signal = _original_signal
             self._log.info("Hailo detection pipeline built successfully")
 
-            # Tune tracker for better detection during camera motion.
-            # Widen Kalman/IOU thresholds so the tracker stays locked on
-            # objects that shift between frames, and keep lost tracks
-            # longer so brief blur doesn't drop them.
-            self._tune_tracker(self._app.pipeline)
-
             self._app.run()
 
         except Exception as e:
@@ -231,29 +225,6 @@ class HailoDetectionApp:
                 self._log.info("Stopping Hailo pipeline...")
             except Exception:
                 pass
-
-    def _tune_tracker(self, pipeline) -> None:
-        """Adjust hailotracker properties for smoother tracking during motion."""
-        tracker = pipeline.get_by_name("hailo_tracker")
-        if tracker is None:
-            self._log.warning("hailotracker element not found; skipping tracker tuning")
-            return
-        try:
-            # Looser Kalman distance threshold (default 0.8) - more tolerant
-            # of position shifts between frames during pan/tilt motion
-            tracker.set_property("kalman-dist-thr", 0.9)
-            # Looser IOU threshold for tracked objects (default 0.9)
-            tracker.set_property("iou-thr", 0.95)
-            # Looser IOU for newly detected objects (default 0.7)
-            tracker.set_property("init-iou-thr", 0.8)
-            # Keep tracked objects longer before marking lost (default 15)
-            tracker.set_property("keep-tracked-frames", 30)
-            # Keep lost objects longer before removing (default 2)
-            tracker.set_property("keep-lost-frames", 8)
-            self._log.info("Tracker tuned for motion: kalman=0.9, iou=0.95, "
-                          "init_iou=0.8, keep_tracked=30, keep_lost=8")
-        except Exception as e:
-            self._log.warning("Failed to tune tracker: %s", e)
 
     @property
     def is_running(self) -> bool:

@@ -9,13 +9,13 @@ camera:
   device: "auto"
   width: 1920
   height: 1080
-  frame_rate: 15
+  frame_rate: 30
 
 hailo:
   # Path to hailo-rpi5-examples repo
   examples_path: "/home/jjk/hailo-rpi5-examples"
-  # Model to use (h8l variant for Hailo-8L on RPi5 AI HAT+)
-  model: "yolov8s"
+  # Model used by the simple detection pipeline (yolov6n)
+  model: "yolov6n"
   # Architecture auto-detected from device
   arch: "auto"
   # NMS thresholds
@@ -24,7 +24,7 @@ hailo:
   batch_size: 2
 
 detection:
-  confidence_threshold: 0.75
+  confidence_threshold: 0.6
   # Labels we care about for the missing-object use case
   allowed_labels:
     - "bottle"
@@ -50,12 +50,13 @@ detection:
     cup: 0.50
     remote: 0.50
     handbag: 0.40
+    cell phone: 0.55
   # Debounce: object must appear in min_hits/window frames to be confirmed
-  # Tuned for 15fps pipeline: 2 hits in 5 frames confirms faster
+  # With empty frames now tracked, this properly rejects false positives
   debounce_window: 5
-  debounce_min_hits: 2
+  debounce_min_hits: 3
   # Min bounding box area ratio (fraction of frame area)
-  min_bbox_area_ratio: 0.008
+  min_bbox_area_ratio: 0.015
 
 memory:
   store_path: "data/memory_store.json"

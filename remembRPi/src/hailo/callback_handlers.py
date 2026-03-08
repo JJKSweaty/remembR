@@ -5,7 +5,7 @@ Extracts detection metadata from GStreamer buffer in the Hailo pipeline callback
 Following the hailo-rpi5-examples pattern: the callback must stay lightweight.
 Heavy processing is handed off via a thread-safe queue.
 
-Reference: hailo-rpi5-examples/basic_pipelines/detection.py
+Reference: hailo-rpi5-examples/basic_pipelines/detection_simple.py
 """
 
 import time
@@ -86,11 +86,11 @@ def app_callback(pad, info, user_data: RemembRCallbackData):
     This runs on every frame. It must stay fast and non-blocking.
     Extracts detections and pushes them to a queue for async processing.
 
-    Pattern follows hailo-rpi5-examples/basic_pipelines/detection.py:
+    Pattern follows hailo-rpi5-examples/basic_pipelines/detection_simple.py:
     - Get buffer from info
     - Get ROI from buffer
     - Iterate HAILO_DETECTION objects
-    - Extract label, confidence, bbox, track_id
+    - Extract label, confidence, bbox
 
     Heavy work (memory updates, snapshots, WebSocket messages) happens
     in a separate consumer thread.
@@ -123,12 +123,6 @@ def app_callback(pad, info, user_data: RemembRCallbackData):
         confidence = detection.get_confidence()
         bbox = detection.get_bbox()
 
-        # Extract tracker ID if available (from hailotracker element)
-        track_id = None
-        tracks = detection.get_objects_typed(hailo.HAILO_UNIQUE_ID)
-        if tracks:
-            track_id = tracks[0].get_id()
-
         raw_detections.append(RawDetection(
             label=label,
             confidence=confidence,
@@ -136,27 +130,24 @@ def app_callback(pad, info, user_data: RemembRCallbackData):
             bbox_y=bbox.ymin(),
             bbox_w=bbox.width(),
             bbox_h=bbox.height(),
-            track_id=track_id,
             timestamp=now,
         ))
 
-    # Push detections to queue (non-blocking). If queue is full, drop oldest.
-    if raw_detections:
+    # Always push to queue so the memory worker can update debounce flags
+    # even for empty-detection frames (recording "not seen" is critical for
+    # debounce to work — otherwise the window only ever contains True entries).
+    try:
+        user_data.detection_queue.put_nowait((raw_detections, frame))
+    except queue.Full:
+        # Drop oldest to make room - detection freshness matters more than completeness
+        try:
+            user_data.detection_queue.get_nowait()
+        except queue.Empty:
+            pass
         try:
             user_data.detection_queue.put_nowait((raw_detections, frame))
         except queue.Full:
-            # Drop oldest to make room - detection freshness matters more than completeness
-            try:
-                user_data.detection_queue.get_nowait()
-            except queue.Empty:
-                pass
-            try:
-                user_data.detection_queue.put_nowait((raw_detections, frame))
-            except queue.Full:
-                pass
-    elif frame is not None:
-        # Even with no detections, store the latest frame for snapshots
-        user_data._frame_holder["latest_frame"] = frame
+            pass
 
     # Log periodic summary (every 100 frames to avoid spam)
     if frame_num % 100 == 0:
