@@ -24,7 +24,7 @@ from src.api.schemas import (
     MedScanRequest, MedScanResponse, CarePlanResponse,
     SweepResponse, PanTiltMoveRequest,
 )
-from src.memory.object_memory import ObjectRecord
+from src.memory.object_memory import ObjectRecord, DetectionRecord
 from src.utils.logging_utils import get_logger
 from src.utils.time_utils import format_age
 from src.utils.drawing_utils import draw_detections
@@ -33,8 +33,36 @@ router = APIRouter()
 log = get_logger()
 
 
-def _object_to_info(obj: ObjectRecord) -> ObjectInfo:
+def _objects_to_detection_records(
+    objects: list[ObjectRecord],
+    display_names: dict[str, str] | None = None,
+) -> list[DetectionRecord]:
+    """Convert visible ObjectRecords to DetectionRecords for bounding box drawing."""
+    dn = display_names or {}
+    records = []
+    for obj in objects:
+        bbox = obj.latest_bbox
+        if not bbox:
+            continue
+        records.append(DetectionRecord(
+            label=dn.get(obj.label, obj.label),
+            confidence=obj.latest_confidence,
+            bbox_x=bbox.get("x", 0),
+            bbox_y=bbox.get("y", 0),
+            bbox_w=bbox.get("w", 0),
+            bbox_h=bbox.get("h", 0),
+            track_id=obj.latest_track_id,
+            timestamp=obj.last_seen,
+        ))
+    return records
+
+
+def _object_to_info(
+    obj: ObjectRecord,
+    display_names: dict[str, str] | None = None,
+) -> ObjectInfo:
     """Convert an ObjectRecord to an API ObjectInfo response."""
+    dn = display_names or {}
     bbox = None
     if obj.latest_bbox:
         bbox = BoundingBox(
@@ -44,7 +72,7 @@ def _object_to_info(obj: ObjectRecord) -> ObjectInfo:
             h=obj.latest_bbox.get("h", 0),
         )
     return ObjectInfo(
-        label=obj.label,
+        label=dn.get(obj.label, obj.label),
         confidence=round(obj.latest_confidence, 3),
         region=obj.latest_region,
         visible_now=obj.visible_now,
@@ -87,9 +115,10 @@ async def health(request: Request) -> HealthResponse:
 async def get_current_objects(request: Request) -> ObjectsResponse:
     """Get objects currently visible in the camera feed."""
     memory = request.app.state.memory
+    dn = getattr(request.app.state, "display_names", {})
     objects = memory.get_current_objects()
     return ObjectsResponse(
-        objects=[_object_to_info(o) for o in objects],
+        objects=[_object_to_info(o, dn) for o in objects],
         count=len(objects),
         timestamp=time.time(),
     )
@@ -99,9 +128,10 @@ async def get_current_objects(request: Request) -> ObjectsResponse:
 async def get_recent_objects(request: Request, within: float = 300.0) -> ObjectsResponse:
     """Get objects seen recently (default: within last 5 minutes)."""
     memory = request.app.state.memory
+    dn = getattr(request.app.state, "display_names", {})
     objects = memory.get_recent_objects(within_seconds=within)
     return ObjectsResponse(
-        objects=[_object_to_info(o) for o in objects],
+        objects=[_object_to_info(o, dn) for o in objects],
         count=len(objects),
         timestamp=time.time(),
     )
@@ -143,7 +173,12 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
     if result.get("found_now") and runner:
         frame = runner.get_latest_frame()
         if frame is not None:
-            snapshot_url = _save_snapshot(frame, body.label, snapshot_dir, request)
+            # Get current detections for bounding box overlay
+            memory = request.app.state.memory
+            dn = getattr(request.app.state, "display_names", {})
+            current_objects = memory.get_current_objects()
+            detections = _objects_to_detection_records(current_objects, dn)
+            snapshot_url = _save_snapshot(frame, body.label, snapshot_dir, request, detections=detections)
             result["snapshot_url"] = snapshot_url
 
     # Set companion state based on result
@@ -336,13 +371,21 @@ async def status(request: Request) -> StatusResponse:
 
 def _save_snapshot(
     frame, label: str, snapshot_dir: str, request: Request,
+    detections=None,
 ) -> str | None:
-    """Save an annotated snapshot and return its URL."""
+    """Save a snapshot and return its URL.
+
+    If detections are provided, bounding boxes and labels are drawn on the image.
+    """
     try:
         Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
         timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         snapshot_id = f"{label}_{timestamp_str}_{uuid.uuid4().hex[:6]}.jpg"
         file_path = Path(snapshot_dir) / snapshot_id
+
+        # Draw bounding boxes if detections are available
+        if detections:
+            frame = draw_detections(frame, detections)
 
         # Convert RGB to BGR for OpenCV if needed
         if frame.shape[2] == 3:

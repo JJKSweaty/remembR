@@ -107,6 +107,16 @@ def create_app(config: dict | None = None) -> FastAPI:
 
     finder = MissingFinder.from_config(memory=memory, config_path="config/labels.yaml")
 
+    # Load display name overrides (e.g. handbag -> wallet)
+    display_names: dict[str, str] = {}
+    try:
+        with open("config/labels.yaml") as _f:
+            _ldata = yaml.safe_load(_f)
+        if _ldata and "display_names" in _ldata:
+            display_names = _ldata["display_names"]
+    except Exception:
+        pass
+
     ws_manager = WebSocketManager()
     msg_router = MessageRouter()
 
@@ -164,6 +174,7 @@ def create_app(config: dict | None = None) -> FastAPI:
         "memory": memory,
         "persistence": persistence,
         "finder": finder,
+        "display_names": display_names,
         "ws_manager": ws_manager,
         "msg_router": msg_router,
         "region_mapper": region_mapper,
@@ -228,7 +239,11 @@ def create_app(config: dict | None = None) -> FastAPI:
                     Schedules a WebSocket broadcast on the async event loop."""
                     loop = app_state.get("event_loop")
                     if loop and ws_manager.client_count > 0:
-                        objects = [r.to_dict() for r in records]
+                        objects = []
+                        for r in records:
+                            d = r.to_dict()
+                            d["label"] = display_names.get(d["label"], d["label"])
+                            objects.append(d)
                         asyncio.run_coroutine_threadsafe(
                             ws_manager.broadcast_objects_update(objects),
                             loop,
@@ -304,9 +319,10 @@ def create_app(config: dict | None = None) -> FastAPI:
         if result.get("found_now") and runner:
             frame = runner.get_latest_frame()
             if frame is not None:
-                from src.api.routes import _save_snapshot
-                # Build a mock request for URL generation
-                url = _save_snapshot(frame, label, snapshot_dir, None)
+                from src.api.routes import _save_snapshot, _objects_to_detection_records
+                current_objects = memory.get_current_objects()
+                detections = _objects_to_detection_records(current_objects, display_names)
+                url = _save_snapshot(frame, label, snapshot_dir, None, detections=detections)
                 if url:
                     result["snapshot_url"] = url
 
@@ -314,9 +330,14 @@ def create_app(config: dict | None = None) -> FastAPI:
 
     async def handle_get_current(websocket: WebSocket, message: dict) -> dict:
         objects = memory.get_current_objects()
+        dicts = []
+        for o in objects:
+            d = o.to_dict()
+            d["label"] = display_names.get(d["label"], d["label"])
+            dicts.append(d)
         return {
             "type": "objects_update",
-            "objects": [o.to_dict() for o in objects],
+            "objects": dicts,
             "timestamp": time.time(),
         }
 
@@ -328,9 +349,10 @@ def create_app(config: dict | None = None) -> FastAPI:
         if frame is None:
             return {"type": "error", "message": "No frame available"}
 
-        from src.api.routes import _save_snapshot
-        import uuid
-        url = _save_snapshot(frame, "manual", snapshot_dir, None)
+        from src.api.routes import _save_snapshot, _objects_to_detection_records
+        current_objects = memory.get_current_objects()
+        detections = _objects_to_detection_records(current_objects, display_names)
+        url = _save_snapshot(frame, "manual", snapshot_dir, None, detections=detections)
         if url:
             snapshot_id = Path(url).name
             return {
@@ -351,9 +373,14 @@ def create_app(config: dict | None = None) -> FastAPI:
     async def handle_get_recent_objects(websocket: WebSocket, message: dict) -> dict:
         within = message.get("within", 300)
         objects = memory.get_recent_objects(within_seconds=within)
+        dicts = []
+        for o in objects:
+            d = o.to_dict()
+            d["label"] = display_names.get(d["label"], d["label"])
+            dicts.append(d)
         return {
             "type": "recent_objects",
-            "objects": [o.to_dict() for o in objects],
+            "objects": dicts,
             "within_seconds": within,
             "timestamp": time.time(),
         }
