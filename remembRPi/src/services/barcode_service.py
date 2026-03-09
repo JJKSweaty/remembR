@@ -1,16 +1,13 @@
 """
 Barcode scanner input service.
 
-Reads barcode data from a USB HID barcode scanner. Most USB barcode scanners
-present as keyboard devices and send scanned data as keystrokes terminated
-by Enter.
+Reads barcode data from:
+1. USB HID barcode scanner (evdev keyboard events)
+2. Camera-based scanning via OpenCV + pyzbar (with bounding boxes)
+3. HTTP/WebSocket submission from the phone app
 
-Supports two modes:
-1. evdev mode (Linux): reads raw input events from /dev/input/eventX
-2. stdin mode (fallback): reads from a dedicated stdin-like pipe
-
-For the hackathon MVP, we also accept barcodes submitted via HTTP/WebSocket
-from the phone app (manual entry or phone camera scan).
+Camera mode uses multiple image preprocessing strategies (sharpening,
+CLAHE, adaptive threshold, upscaling) to handle poor focus conditions.
 """
 
 import asyncio
@@ -19,7 +16,22 @@ import time
 from pathlib import Path
 from typing import Callable
 
+import cv2
+import numpy as np
+
 from src.utils.logging_utils import get_logger
+
+try:
+    from pyzbar import pyzbar as _pyzbar
+    HAS_PYZBAR = True
+except ImportError:
+    HAS_PYZBAR = False
+
+try:
+    _test_det = cv2.barcode.BarcodeDetector()
+    HAS_CV_BARCODE = True
+except AttributeError:
+    HAS_CV_BARCODE = False
 
 
 class BarcodeService:
@@ -155,3 +167,124 @@ class BarcodeService:
             "last_barcode": self._last_barcode,
             "last_scan_time": self._last_scan_time,
         }
+
+    # ── Camera-based barcode scanning ───────────────────────
+
+    @staticmethod
+    def preprocess_for_barcodes(frame: np.ndarray) -> list[np.ndarray]:
+        """Return preprocessed grayscale images to help decode blurry barcodes."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        images = [gray]
+
+        # Sharpen
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+        sharpened = cv2.filter2D(gray, -1, kernel)
+        images.append(sharpened)
+
+        # CLAHE
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        images.append(clahe.apply(gray))
+
+        # Adaptive threshold
+        thresh = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
+        )
+        images.append(thresh)
+
+        # 2x upscale of sharpened (helps with small / blurry barcodes)
+        h, w = sharpened.shape[:2]
+        images.append(cv2.resize(sharpened, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC))
+
+        return images
+
+    def scan_frame(self, frame: np.ndarray, draw: bool = True) -> list[dict]:
+        """Scan a BGR frame for barcodes/QR codes.
+
+        Args:
+            frame: BGR numpy array (modified in-place if draw=True).
+            draw: If True, draw bounding boxes and labels on the frame.
+
+        Returns:
+            List of dicts with keys: type, data, polygon.
+        """
+        preprocessed = self.preprocess_for_barcodes(frame)
+        results: list[dict] = []
+        seen: set[str] = set()
+
+        # pyzbar (best coverage: QR, EAN, UPC, Code128, Code39, etc.)
+        if HAS_PYZBAR:
+            sources = [frame] + preprocessed
+            for img in sources:
+                for obj in _pyzbar.decode(img):
+                    data_str = obj.data.decode("utf-8", errors="replace")
+                    key = f"{obj.type}:{data_str}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
+                    pts = np.array([(p.x, p.y) for p in obj.polygon], dtype=np.int32)
+                    entry = {"type": obj.type, "data": data_str, "polygon": pts}
+                    results.append(entry)
+
+                    if draw:
+                        color = self._color_for_type(obj.type)
+                        if len(pts) >= 4:
+                            cv2.polylines(frame, [pts], True, color, 2)
+                        else:
+                            r = obj.rect
+                            cv2.rectangle(frame, (r.left, r.top),
+                                          (r.left + r.width, r.top + r.height), color, 2)
+                        label = f"{obj.type}: {data_str}"
+                        tx = int(pts[0][0]) if len(pts) else obj.rect.left
+                        ty = max(int(pts[0][1]) - 10 if len(pts) else obj.rect.top - 10, 15)
+                        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                        cv2.rectangle(frame, (tx, ty - th - 4), (tx + tw + 4, ty + 4), color, -1)
+                        cv2.putText(frame, label, (tx + 2, ty),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+                    # Also submit through the normal pipeline
+                    self.submit_barcode(data_str)
+
+        # OpenCV BarcodeDetector fallback
+        if HAS_CV_BARCODE:
+            detector = cv2.barcode.BarcodeDetector()
+            result = detector.detectAndDecode(frame)
+            if len(result) == 4:
+                ok, decoded_info, decoded_type, points = result
+                _cv_ok = ok and decoded_info is not None
+            else:
+                decoded_info, decoded_type, points = result
+                _cv_ok = bool(decoded_info)
+            if _cv_ok:
+                for i, info in enumerate(decoded_info):
+                    if not info:
+                        continue
+                    btype = str(decoded_type[i]) if decoded_type is not None and i < len(decoded_type) else "BARCODE"
+                    key = f"{btype}:{info}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
+                    pts = points[i].astype(np.int32) if points is not None else np.array([])
+                    results.append({"type": btype, "data": info, "polygon": pts})
+                    if draw and len(pts):
+                        color = self._color_for_type(btype)
+                        cv2.polylines(frame, [pts], True, color, 2)
+                        label = f"{btype}: {info}"
+                        tx, ty = int(pts[0][0]), max(int(pts[0][1]) - 10, 15)
+                        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                        cv2.rectangle(frame, (tx, ty - th - 4), (tx + tw + 4, ty + 4), color, -1)
+                        cv2.putText(frame, label, (tx + 2, ty),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                    self.submit_barcode(info)
+
+        return results
+
+    @staticmethod
+    def _color_for_type(barcode_type: str) -> tuple[int, int, int]:
+        COLORS = {
+            "QRCODE": (0, 255, 0), "EAN13": (255, 165, 0), "EAN8": (255, 165, 0),
+            "UPCA": (255, 165, 0), "UPCE": (255, 165, 0), "CODE128": (0, 200, 255),
+            "CODE39": (0, 200, 255), "I25": (200, 200, 0), "PDF417": (128, 0, 255),
+        }
+        return COLORS.get(barcode_type.upper(), (0, 255, 255))

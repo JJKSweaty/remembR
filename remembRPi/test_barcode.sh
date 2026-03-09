@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Test barcode scanning via the remembR API.
+# Test barcode scanning.
 #
 # Usage:
-#   ./test_barcode.sh              # scan camera once (full med pipeline)
+#   ./test_barcode.sh camera       # open camera directly (no server needed)
+#   ./test_barcode.sh camera --no-display  # headless mode
+#   ./test_barcode.sh              # scan camera once via API (needs run.sh)
 #   ./test_barcode.sh debug        # scan + save debug snapshot you can view
 #   ./test_barcode.sh loop         # scan camera every 2 seconds
 #   ./test_barcode.sh med          # test care plan with known UPC_A barcodes
 #   ./test_barcode.sh barcode 049281003623   # manually submit a barcode
 #
-# The server must be running (run.sh) on localhost:8000.
+# For modes other than 'camera', the server must be running (run.sh) on localhost:8000.
 
 HOST="${REMEMBR_HOST:-localhost}"
 PORT="${REMEMBR_PORT:-8000}"
@@ -139,7 +141,24 @@ print(f'  Uptime: {d.get(\"uptime_seconds\", 0):.0f}s')
     echo ""
 }
 
+# ---- Camera mode (standalone, no server needed) ----
+
+camera_mode() {
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    shift  # remove 'camera' from args
+    echo -e "${CYAN}=== Standalone Barcode/QR Scanner (OpenCV + pyzbar) ===${NC}"
+    echo -e "${YELLOW}No server required. Opening camera directly.${NC}"
+    echo ""
+    exec python3 "${SCRIPT_DIR}/scripts/test_barcode_camera.py" "$@"
+}
+
 # ---- Main ----
+
+# 'camera' mode doesn't need the server
+if [ "${1:-}" = "camera" ]; then
+    camera_mode "$@"
+    exit 0
+fi
 
 check_server
 
@@ -164,9 +183,10 @@ case "${1:-once}" in
         submit_barcode "$2"
         ;;
     *)
-        echo "Usage: $0 [once|debug|loop|med|barcode <code>]"
+        echo "Usage: $0 [camera|once|debug|loop|med|barcode <code>]"
         echo ""
-        echo "  once     - Scan camera for barcodes (default)"
+        echo "  camera   - Open camera directly with OpenCV (no server needed)"
+        echo "  once     - Scan camera for barcodes via API (default)"
         echo "  debug    - Scan camera + save snapshot you can view"
         echo "  loop     - Scan camera every 2 seconds"
         echo "  med      - Test care plan with known UPC_A barcodes"
