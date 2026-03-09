@@ -68,7 +68,7 @@ detection:
   debounce_window: 5
   debounce_min_hits: 3
   # Min bounding box area ratio (fraction of frame area)
-  min_bbox_area_ratio: 0.015
+  min_bbox_area_ratio: 0.008
 
 memory:
   store_path: "data/memory_store.json"
