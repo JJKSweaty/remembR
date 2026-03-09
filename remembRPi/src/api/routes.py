@@ -559,6 +559,8 @@ async def status(request: Request) -> StatusResponse:
     care_plan = getattr(app_state, "care_plan_service", None)
     lidar = getattr(app_state, "lidar_service", None)
     esp32_state = getattr(app_state, "esp32_state_service", None)
+    camera_settings = getattr(app_state, "camera_settings", {})
+    camera_stream = getattr(app_state, "camera_stream", {})
 
     import socket
     return StatusResponse(
@@ -571,6 +573,8 @@ async def status(request: Request) -> StatusResponse:
         camera={
             "device": getattr(app_state, "camera_device", "unknown"),
             "pipeline_running": runner.is_running if runner else False,
+            "settings": camera_settings,
+            "stream": camera_stream,
         },
         hailo={
             "available": True,

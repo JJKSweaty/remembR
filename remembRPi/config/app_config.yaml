@@ -5,11 +5,23 @@ server:
   port: 8000
 
 camera:
-  # "auto" discovers USB webcam automatically, or specify /dev/videoX
+  # "auto" discovers USB webcam automatically, or specify /dev/videoX.
   device: "auto"
-  width: 1920
-  height: 1080
+  # If true, startup fails clearly when camera can't be opened.
+  required: true
+  # Low-latency baseline for USB webcams on Pi 5.
+  width: 640
+  height: 480
   frame_rate: 30
+  # "auto" tries fallback_pixel_formats in order.
+  pixel_format: "auto"
+  fallback_pixel_formats: ["MJPG", "YUYV"]
+  # Keep capture buffers tiny so newest frame wins.
+  buffer_size: 1
+  queue_size: 2
+  warmup_grabs: 2
+  # Apply requested mode via v4l2-ctl before pipeline starts.
+  apply_v4l2_controls: true
 
 hailo:
   # Path to hailo-rpi5-examples repo

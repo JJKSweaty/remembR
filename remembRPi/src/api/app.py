@@ -32,6 +32,7 @@ from src.transport.websocket_manager import WebSocketManager
 from src.transport.message_router import MessageRouter
 from src.transport.tailscale_utils import print_connection_info
 from src.camera.usb_camera_detect import get_best_usb_camera, validate_camera
+from src.camera.camera_settings import load_camera_settings
 from src.utils.logging_utils import setup_logging, get_logger
 from src.services.pan_tilt_service import PanTiltService
 from src.services.barcode_service import BarcodeService
@@ -66,18 +67,47 @@ def create_app(config: dict | None = None) -> FastAPI:
     )
     log = get_logger()
 
-    # Resolve camera device
+    # Resolve camera device + low-latency capture settings
     cam_cfg = config.get("camera", {})
-    camera_device = cam_cfg.get("device", "auto")
-    if camera_device is None:
+    camera_settings = load_camera_settings(cam_cfg)
+    configured_camera_device = cam_cfg.get("device", "auto")
+    camera_device = configured_camera_device
+    if configured_camera_device is None:
         log.warning("Camera disabled via config. Pipeline will not start.")
-    elif camera_device == "auto":
+    elif configured_camera_device == "auto":
         camera_device = get_best_usb_camera()
         if camera_device is None:
-            log.warning("No USB camera found. Pipeline will not start.")
+            msg = "No USB camera found for required pipeline startup."
+            if camera_settings.required:
+                raise RuntimeError(msg)
+            log.warning("%s Running in API-only mode.", msg)
     elif not validate_camera(camera_device):
-        log.warning("Camera device %s is not valid. Pipeline will not start.", camera_device)
+        msg = f"Camera device {camera_device} is not valid."
+        if camera_settings.required:
+            raise RuntimeError(msg)
+        log.warning("%s Pipeline will not start.", msg)
         camera_device = None
+
+    if camera_device and not validate_camera(camera_device):
+        msg = f"Camera device {camera_device} is not readable."
+        if camera_settings.required:
+            raise RuntimeError(msg)
+        log.warning("%s Pipeline will not start.", msg)
+        camera_device = None
+
+    if camera_device:
+        log.info(
+            "Camera startup settings: device=%s target=%dx%d@%dfps format=%s fallback=%s "
+            "buffer=%d queue=%d",
+            camera_device,
+            camera_settings.width,
+            camera_settings.height,
+            camera_settings.frame_rate,
+            camera_settings.pixel_format,
+            ",".join(camera_settings.fallback_pixel_formats),
+            camera_settings.buffer_size,
+            camera_settings.queue_size,
+        )
 
     # Build memory components
     det_cfg = config.get("detection", {})
@@ -180,6 +210,8 @@ def create_app(config: dict | None = None) -> FastAPI:
         "msg_router": msg_router,
         "region_mapper": region_mapper,
         "camera_device": camera_device,
+        "camera_settings": camera_settings.as_dict(),
+        "camera_stream": {},
         "snapshot_dir": snapshot_dir,
         "hailo_runner": None,
         "tailscale_status": {},
@@ -240,12 +272,14 @@ def create_app(config: dict | None = None) -> FastAPI:
                 runner = HailoRunner(
                     memory=memory,
                     camera_device=camera_device,
+                    camera_settings=camera_settings,
                     hailo_examples_path=hailo_cfg.get("examples_path"),
                     arch=hailo_cfg.get("arch", "auto"),
                 )
 
                 if runner.start():
                     app.state.hailo_runner = runner
+                    app.state.camera_stream = runner.active_camera_mode
                     log.info("Hailo detection pipeline started successfully")
                 else:
                     log.warning("Hailo pipeline failed to start. "
