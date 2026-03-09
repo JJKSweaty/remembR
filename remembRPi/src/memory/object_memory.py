@@ -87,11 +87,34 @@ class ObjectRecord:
     history: list[Sighting] = field(default_factory=list)
     # Debounce window: recent frame-level detection flags
     _recent_flags: list[bool] = field(default_factory=list)
+    # Debounce parameters (set by ObjectMemoryManager after creation)
+    _debounce_window: int = 5
+    _debounce_min_hits: int = 3
+
+    @property
+    def is_debounce_confirmed(self) -> bool:
+        """Check if this object passes temporal debounce (stable detection).
+
+        Following the Hailo hailo-rpi5-examples pattern, an object must be
+        detected in at least _debounce_min_hits of the last _debounce_window
+        frames to be considered a real detection (not a false positive).
+        """
+        hits = sum(self._recent_flags[-self._debounce_window:])
+        return hits >= self._debounce_min_hits
 
     @property
     def visible_now(self) -> bool:
-        """Object is 'visible' if seen within the last 5 seconds."""
-        return (time.time() - self.last_seen) < 5.0
+        """Object is 'visible' if seen within the last 5 seconds AND debounce-confirmed.
+
+        Debounce prevents false positives: a single misidentified frame
+        cannot mark an object as visible.  This follows the Hailo
+        hailo-rpi5-examples pattern where an object must be detected in
+        N consecutive frames before being considered present.
+        """
+        if (time.time() - self.last_seen) >= 5.0:
+            return False
+        # Must have enough recent True flags to pass debounce
+        return self.is_debounce_confirmed
 
     @property
     def seen_recently(self) -> bool:
@@ -250,6 +273,8 @@ class ObjectMemoryManager:
                     "w": det.bbox_w, "h": det.bbox_h,
                 },
                 latest_track_id=det.track_id,
+                _debounce_window=self._debounce_window,
+                _debounce_min_hits=self._debounce_min_hits,
             )
             self._objects[label] = obj
 
@@ -314,8 +339,7 @@ class ObjectMemoryManager:
             obj = self._objects.get(label)
             if obj is None:
                 return False
-            hits = sum(obj._recent_flags[-self._debounce_window:])
-            return hits >= self._debounce_min_hits
+            return obj.is_debounce_confirmed
 
     def get_state_for_persistence(self) -> dict:
         """Return serializable state for disk persistence."""
@@ -356,5 +380,7 @@ class ObjectMemoryManager:
                     latest_bbox=obj_data.get("latest_bbox", {}),
                     latest_track_id=obj_data.get("latest_track_id"),
                     history=history,
+                    _debounce_window=self._debounce_window,
+                    _debounce_min_hits=self._debounce_min_hits,
                 )
             self._log.info("Loaded %d objects from persistence", len(self._objects))

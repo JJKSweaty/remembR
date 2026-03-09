@@ -5,17 +5,29 @@ server:
   port: 8000
 
 camera:
-  # "auto" discovers USB webcam automatically, or specify /dev/videoX
+  # "auto" discovers USB webcam automatically, or specify /dev/videoX.
   device: "auto"
-  width: 1920
-  height: 1080
+  # If true, startup fails clearly when camera can't be opened.
+  required: true
+  # Low-latency baseline for USB webcams on Pi 5.
+  width: 640
+  height: 480
   frame_rate: 30
+  # "auto" tries fallback_pixel_formats in order.
+  pixel_format: "auto"
+  fallback_pixel_formats: ["MJPG", "YUYV"]
+  # Keep capture buffers tiny so newest frame wins.
+  buffer_size: 1
+  queue_size: 2
+  warmup_grabs: 2
+  # Apply requested mode via v4l2-ctl before pipeline starts.
+  apply_v4l2_controls: true
 
 hailo:
   # Path to hailo-rpi5-examples repo
   examples_path: "/home/jjk/hailo-rpi5-examples"
-  # Model to use (h8l variant for Hailo-8L on RPi5 AI HAT+)
-  model: "yolov8m"
+  # Model to use (yolov8s for Hailo-8L on RPi5 AI HAT+)
+  model: "yolov8s"
   # Architecture auto-detected from device
   arch: "auto"
   # NMS thresholds
@@ -24,7 +36,7 @@ hailo:
   batch_size: 2
 
 detection:
-  confidence_threshold: 0.75
+  confidence_threshold: 0.6
   # Labels we care about for the missing-object use case
   allowed_labels:
     - "bottle"
@@ -44,14 +56,15 @@ detection:
     - "chair"
     - "bowl"
     - "vase"
-  # Per-label confidence overrides
+  # Per-label confidence overrides (omit to use default confidence_threshold)
   label_thresholds:
-    cell phone: 0.55
     bottle: 0.45
     cup: 0.50
     remote: 0.50
     handbag: 0.40
+    cell phone: 0.55
   # Debounce: object must appear in min_hits/window frames to be confirmed
+  # With empty frames now tracked, this properly rejects false positives
   debounce_window: 5
   debounce_min_hits: 3
   # Min bounding box area ratio (fraction of frame area)

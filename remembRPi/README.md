@@ -1,8 +1,8 @@
 # remembR
 
-Edge AI missing-object finder backend for Raspberry Pi 5 with Hailo-8 accelerator.
+Edge AI Memory Aid For Dementia Patients backend for Raspberry Pi 5 with Hailo-8L accelerator.
 
-remembR watches a room through a USB camera, detects and tracks objects in real time using Hailo, maintains a memory of recently seen objects and their last known positions, and communicates with your phone app over HTTP and WebSocket via Tailscale.
+remembR is an personal AI companion for people with memory problems, using a camera detects and tracks objects in real time using a Hailo-8L NPU, maintains a memory of recently seen objects and their last known positions, and communicates with your phone app over HTTP and WebSocket via Tailscale.
 
 ## Quick Start
 
@@ -12,21 +12,31 @@ cd ~/Desktop/remembR
 ./run.sh           # Start the server
 ```
 
-## What It Does
+## Features
 
-1. **Live detection** - USB webcam feed processed by Hailo-8 with YOLOv8s object detection
-2. **Object memory** - Tracks what objects were seen, when, and where in the frame
-3. **Missing-object search** - Phone app asks "where is my wallet?" and gets a meaningful answer
-4. **Snapshot capture** - Returns annotated photos showing where objects were detected
-5. **Tailscale networking** - Stable, private connection between your phone and the Pi
+- **Full 1080p live detection** - 1920×1080 USB webcam feed processed by Hailo-8L with YOLOv8s at 30fps
+- **Object memory** - Tracks what objects were seen, when, and where (left side / center / right side etc.)
+- **Missing-object search** - Ask "where is my wallet?" and get the last known location, confidence, and time since seen
+- **Annotated snapshots** - When an object is found, returns a full-resolution JPEG with bounding boxes and labels drawn on it
+- **Friendly label names** - COCO labels are translated to human-friendly names (e.g. `handbag` → `wallet`) in all API responses, WebSocket broadcasts, and bounding box overlays
+- **Label aliases** - Fuzzy query matching: "phone", "mobile", "smartphone" all resolve to cell phone detection; "wallet", "billfold", "purse" all resolve to handbag detection
+- **Per-label confidence tuning** - Smaller or harder objects (bottle, cup, remote, wallet) use lower thresholds so they aren't silently dropped; phone stays at 75%+ to avoid false positives
+- **Pan-tilt sweep** - ESP32-controlled camera mount can sweep the room to find objects not currently in frame
+- **Persistent memory** - Object history survives restarts via JSON persistence
+- **Tailscale networking** - Stable, private, encrypted connection; both team members' devices are full tailnet members
+
+## Hardware
+
+- Raspberry Pi 5 (8GB)
+- Hailo-8L AI HAT+ (13 TOPS)
+- USB webcam at 1080p (e.g. Logitech Brio 100)
+- ESP32-S3 controlling a pan-tilt servo mount
 
 ## Prerequisites
 
-- Raspberry Pi 5 with Hailo-8/8L AI HAT+
-- USB webcam (e.g., Logitech Brio 100)
 - Hailo RPi5 examples installed at `~/hailo-rpi5-examples`
 - Python 3.11+
-- Tailscale (recommended for phone access)
+- Tailscale installed and authenticated
 
 ## Running
 
@@ -55,11 +65,25 @@ export PYTHONPATH="$HOME/hailo-rpi5-examples:$(pwd)"
 python3 -m src.main
 ```
 
-## Connecting From Your Phone
+### Monitor Hailo device
 
-The phone app should connect using the Pi's Tailscale hostname (preferred) or IP.
+```bash
+hailortcli monitor
+# or
+export HAILO_MONITOR=1 && ./run.sh
+```
 
-On startup, remembR prints connection URLs:
+---
+
+## Tailscale Networking
+
+remembR uses Tailscale so the phone app can reach the Pi reliably over any network (WiFi, mobile data, different LANs) without port forwarding.
+
+### How it works
+
+Every device - the Pi, both team members' phones/laptops - is a **full member of one shared tailnet**. All traffic is WireGuard-encrypted. The Pi gets a stable MagicDNS hostname that never changes, even after reboots.
+
+On startup, remembR prints all available connection URLs:
 
 ```
 Preferred HTTP URL:      http://secondsight.tail12345.ts.net:8000
@@ -69,18 +93,71 @@ Fallback WebSocket URL:  ws://100.x.y.z:8000/ws
 Local LAN HTTP URL:      http://10.0.0.120:8000
 ```
 
-Use the **Tailscale hostname** as the primary address. It stays stable even if the Pi restarts.
+### Adding a team member to the tailnet
+
+Invite them at [login.tailscale.com/admin/users](https://login.tailscale.com/admin/users) → **Invite users**. They authenticate once and their device appears as a full peer in `tailscale status` on all other devices.
+
+```bash
+tailscale status
+# should list Pi, your laptop, partner's laptop all as "connected"
+```
+
+### ACL policy
+
+To restrict access so only tailnet members can reach the Pi's API port, use an ACL in the Tailscale admin console. The policy below allows all authenticated members full access
+
+```json
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["autogroup:member:*"]
+    }
+  ]
+}
+```
+
+To scope it more tightly (e.g. only allow access to port 8000 on the Pi):
+
+```json
+{
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["tag:remembr-pi:8000"]
+    }
+  ],
+  "tagOwners": {
+    "tag:remembr-pi": ["autogroup:owner"]
+  }
+}
+```
+
+Then tag the Pi device as `tag:remembr-pi` in the machines list.
+
+### Verify connection
+
+```bash
+tailscale status
+tailscale ip -4
+./run.sh --tailscale-check
+curl http://<tailscale-ip>:8000/health
+```
+
+---
 
 ## HTTP API
 
 | Endpoint | Method | Description |
 |---|---|---|
 | `/health` | GET | Health check with pipeline status |
-| `/objects/current` | GET | Objects currently visible |
+| `/objects/current` | GET | Objects currently visible in frame |
 | `/objects/recent?within=300` | GET | Objects seen recently (default 5 min) |
-| `/find` | POST | Search for a missing object |
-| `/snapshots/{id}` | GET | Serve a saved snapshot image |
-| `/command` | POST | Generic commands (status, clear_memory, force_persist) |
+| `/find` | POST | Search for a missing object - returns location + annotated snapshot |
+| `/snapshots/{id}` | GET | Fetch a saved snapshot JPEG |
+| `/command` | POST | Commands: `status`, `clear_memory`, `force_persist` |
 | `/status` | GET | Detailed system status |
 
 ### Find example
@@ -92,67 +169,145 @@ curl -X POST http://secondsight:8000/find \
 ```
 
 Response:
+
 ```json
 {
   "type": "find_result",
-  "label": "handbag",
+  "label": "wallet",
   "query": "wallet",
-  "found_now": false,
-  "last_seen_ago": "2 minutes ago",
+  "found_now": true,
+  "last_seen_ago": "just now",
   "region": "left side",
-  "confidence": 0.82,
-  "message": "I last saw wallet 2 minutes ago in the left side. It's not visible right now, but was detected with 82% confidence."
+  "confidence": 0.76,
+  "snapshot_url": "/snapshots/wallet_2026-03-08_14-30-00_abc123.jpg",
+  "message": "Wallet is visible right now in the left side. Detected with 76% confidence."
 }
 ```
+
+The `snapshot_url` points to a full 1080p JPEG with bounding boxes drawn on all currently detected objects.
+
+---
 
 ## WebSocket Protocol
 
 Connect to `ws://<host>:8000/ws`
 
-### Phone sends (inbound)
+### Phone → Pi
 
 ```json
 {"type": "ping"}
 {"type": "find", "label": "wallet"}
 {"type": "get_current_objects"}
+{"type": "get_recent_objects", "within": 300}
 {"type": "capture_snapshot"}
+{"type": "sweep"}
 ```
 
-### Pi sends (outbound)
+### Pi → Phone
 
 ```json
 {"type": "pong", "timestamp": 1234567890.0}
-{"type": "find_result", "label": "handbag", "found_now": true, "region": "center area", ...}
+{"type": "find_result", "label": "wallet", "found_now": true, "region": "center area", "snapshot_url": "/snapshots/...", ...}
 {"type": "objects_update", "objects": [...], "timestamp": 1234567890.0}
-{"type": "snapshot_ready", "snapshot_id": "wallet_2026-03-07_14-30-00_abc123.jpg", "url": "/snapshots/..."}
+{"type": "snapshot_ready", "snapshot_id": "manual_2026-03-08_14-30-00_abc123.jpg", "url": "/snapshots/..."}
 {"type": "error", "message": "..."}
 ```
 
-See `docs/mobile_protocol.md` for the full schema.
+Real-time `objects_update` messages are pushed automatically whenever the detection pipeline processes a new frame with confirmed objects. All labels in these messages use the friendly display names (e.g. `"wallet"` not `"handbag"`).
+
+See `docs/mobile_protocol.md` for the full message schema.
+
+---
 
 ## Architecture
 
 ```
-USB Camera --> [GStreamer Pipeline + Hailo-8 Inference]
-                          |
-                    [Pad Probe Callback]  (lightweight: extract detections)
-                          |
-                  [Thread-Safe Queue]     (producer-consumer bridge)
-                          |
-                  [Memory Worker Thread]  (heavy processing here)
-                          |
-              +-----------+-----------+
-              |                       |
-     [ObjectMemoryManager]    [WebSocket Broadcast]
-              |                       |
-     [JSON Persistence]        [Phone App Client]
-              |
-     [MissingFinder]
+USB Camera (1080p)
+       |
+[GStreamer + Hailo-8L YOLOv8s]   <-- hardware inference, ~30fps
+       |
+ [Pad Probe Callback]             <-- lightweight: extract detections + frame
+       |
+ [Thread-Safe Queue]              <-- producer-consumer bridge
+       |
+ [Memory Worker Thread]           <-- all heavy work happens here
+       |
+   +---+-------------------+
+   |                       |
+[ObjectMemoryManager]  [WebSocket Broadcast]  --> phone app
+   |                       |
+[JSON Persistence]    [on_detections callback]
+   |
+[MissingFinder]              <-- label alias resolution + response formatting
+   |
+[FastAPI HTTP + WS]          <-- exposed over Tailscale
 ```
 
-The Hailo callback stays fast. All memory updates, snapshot saving, and WebSocket messaging happen in the memory worker thread.
+The GStreamer/Hailo callback is kept deliberately minimal - it only extracts detection structs and the raw frame into a queue. All memory updates, snapshot saving, label translation, and WebSocket messaging happen in the separate memory worker thread.
 
-See `docs/architecture.md` for detailed design documentation.
+See `docs/architecture.md` for full design documentation.
+
+---
+
+## Object Detection
+
+### Model
+
+YOLOv8s compiled for Hailo-8L (`yolov8s_h8l.hef`). This is the largest COCO detection model available for the Hailo-8L hardware - yolov8m only exists for the higher-end Hailo-10.
+
+### Detected object classes
+
+The system filters detections to a relevant subset of COCO classes:
+
+`bottle`, `cup`, `cell phone`, `backpack`, `remote`, `book`, `keyboard`, `mouse`, `wallet` (handbag), `laptop`, `umbrella`, `scissors`, `clock`, `tv`, `chair`, `bowl`, `vase`
+
+### Confidence thresholds
+
+| Label | Threshold | Reason |
+|---|---|---|
+| cell phone | 0.75 (default) | High bar to avoid false positives |
+| cup | 0.50 | Varied shapes/sizes |
+| remote | 0.50 | Small, often partially occluded |
+| bottle | 0.45 | Many different bottle types |
+| wallet (handbag) | 0.40 | Small object, COCO class mismatch |
+| all others | 0.75 | Default |
+
+### Label aliases
+
+User queries are resolved to the closest COCO class:
+
+| User says | Detects as |
+|---|---|
+| wallet, billfold, purse | wallet (handbag) |
+| phone, mobile, smartphone | cell phone |
+| mug, glass, tumbler | cup |
+| controller, clicker | remote |
+| monitor, screen | tv |
+| bag, rucksack | backpack |
+
+### Known limitations
+
+- Detects **object classes**, not unique instances - cannot distinguish your wallet from someone else's
+- COCO has no wallet class; wallet detections use the `handbag` class internally but display as `wallet` in all outputs
+- Small objects or unusual lighting/angles may be missed or have low confidence
+- Temporal debounce (3 hits in 5 frames) filters flickering detections but adds a small lag to first detection
+
+---
+
+## Configuration
+
+All tunable settings are in `config/app_config.yaml`. Key sections:
+
+- `camera` — resolution (currently 1920×1080), device auto-detection
+- `hailo` — model, NMS thresholds
+- `detection` — allowed labels, per-label confidence, debounce window, min bbox area
+- `memory` — persistence path, history limits, stale thresholds
+- `snapshots` — save directory, JPEG quality, retention policy
+- `esp32` — pan-tilt controller IP and port
+
+Label aliases and display name overrides (e.g. `handbag` → `wallet`) are in `config/labels.yaml`.
+
+---
 
 ## Project Structure
 
@@ -161,42 +316,44 @@ remembR/
   src/
     main.py                    # Entry point
     camera/
-      usb_camera_detect.py     # USB webcam discovery
-      camera_utils.py          # Frame capture helpers
+      usb_camera_detect.py     # USB webcam auto-discovery
+      camera_utils.py          # Fallback single-frame capture
     hailo/
       callback_handlers.py     # GStreamer pad probe callback
-      hailo_detection_app.py   # Pipeline builder
-      hailo_runner.py          # Orchestrator (pipeline + worker)
+      hailo_detection_app.py   # Pipeline builder + thread management
+      hailo_runner.py          # Orchestrator (pipeline + memory worker)
     memory/
-      object_memory.py         # ObjectMemoryManager
+      object_memory.py         # ObjectMemoryManager + DetectionRecord
       persistence.py           # JSON disk persistence
-      region_mapper.py         # Bbox-to-region mapping
-      missing_finder.py        # Missing object search
+      region_mapper.py         # Bbox-to-region mapping (3×3 grid)
+      missing_finder.py        # Missing object search + alias resolution
     transport/
       websocket_manager.py     # WebSocket connection manager
       message_router.py        # Message type dispatcher
-      tailscale_utils.py       # Tailscale detection utilities
+      tailscale_utils.py       # Tailscale detection + URL printing
     api/
-      app.py                   # FastAPI app factory
+      app.py                   # FastAPI app factory + WebSocket handlers
       routes.py                # HTTP route handlers
-      schemas.py               # Pydantic data models
+      schemas.py               # Pydantic request/response models
     utils/
-      logging_utils.py         # Centralized logging
+      logging_utils.py         # Centralized logging setup
       time_utils.py            # Timestamp helpers
-      drawing_utils.py         # Bbox annotation drawing
+      drawing_utils.py         # Bounding box annotation (resolution-aware)
   config/
     app_config.yaml            # Main configuration
-    labels.yaml                # Label aliases for fuzzy matching
+    labels.yaml                # Aliases, display names, snapshot priorities
   data/
-    memory_store.json          # Persisted object memory
-    snapshots/                 # Saved snapshot images
+    memory_store.json          # Persisted object memory (survives restarts)
+    snapshots/                 # Annotated JPEG snapshots
     logs/                      # Application logs
   docs/
     architecture.md            # System design documentation
-    mobile_protocol.md         # Phone app message schema
-    tailscale_setup.md         # Tailscale networking guide
+    mobile_protocol.md         # Phone app WebSocket message schema
+    tailscale_setup.md         # Tailscale setup and troubleshooting guide
     troubleshooting.md         # Common issues and fixes
 ```
+
+---
 
 ## Troubleshooting
 
@@ -204,80 +361,43 @@ remembR/
 
 ```bash
 v4l2-ctl --list-devices
-# or
 ls -la /dev/video*
 ```
 
-Look for the USB device (e.g., Logitech Brio 100), not the RPi ISP `/dev/video20+` entries.
+Look for the USB device (e.g. Logitech Brio 100), not the RPi ISP `/dev/video20+` entries.
 
-### Activate Hailo environment
+### Video is choppy or resolution is wrong
 
-```bash
-cd ~/hailo-rpi5-examples
-source setup_env.sh
-```
-
-### Test base Hailo detection separately
-
-```bash
-cd ~/hailo-rpi5-examples
-source setup_env.sh
-python basic_pipelines/detection.py --input /dev/video0
-```
-
-### Video is choppy
-
-- Lower resolution in `config/app_config.yaml` (try 640x480)
+- Verify the camera supports 1920×1080 (`v4l2-ctl --list-formats-ext`)
+- Lower resolution in `config/app_config.yaml` to 1280×720 if needed
 - Check CPU load with `htop`
-- Ensure heavy processing is not in the callback (it shouldn't be with remembR's design)
-
-### Monitor Hailo device
-
-```bash
-hailortcli monitor
-# or set environment variable before running:
-export HAILO_MONITOR=1
-./run.sh
-```
-
-### Check CPU load
-
-```bash
-htop
-```
-
-### Verify Tailscale connection
-
-```bash
-tailscale status
-tailscale ip -4
-./run.sh --tailscale-check
-```
 
 ### Phone app cannot connect
 
-1. Verify both phone and Pi are on the same Tailscale tailnet
-2. Check `tailscale status` shows both devices
-3. Try pinging the Pi from the phone: `ping <tailscale-ip>`
-4. Verify the port is correct (default 8000)
-5. Try the fallback IP if hostname doesn't resolve
+1. Check `tailscale status` - both devices must show as connected
+2. Try `ping <tailscale-ip>` from the phone
+3. Check remembR is running: `curl http://<tailscale-ip>:8000/health`
+4. Use the fallback Tailscale IP if MagicDNS doesn't resolve
+5. Ensure both devices are **full tailnet members**, not just share recipients
 
-See `docs/troubleshooting.md` for more.
+### Object not being detected
 
-## Object Detection Limitations
+- Check `curl http://localhost:8000/objects/current` to see what the pipeline sees
+- Lower the confidence threshold for that label in `config/app_config.yaml`
+- Improve lighting - Hailo detection degrades significantly in low light
+- Move the object closer to the center of the frame
 
-remembR uses COCO-trained YOLOv8s for object detection. This means:
+### Activate Hailo environment manually
 
-- It detects **object classes** (e.g., "cup", "cell phone"), not unique instances
-- It cannot distinguish YOUR wallet from any other wallet
-- "Wallet" is not a COCO class; queries for "wallet" are mapped to "handbag"
-- Detection confidence and consistency depend on lighting, angle, and object size
-- Small objects or unusual orientations may be missed
+```bash
+cd ~/hailo-rpi5-examples
+source setup_env.sh
+```
 
-The system is honest about these limitations in its responses.
+---
 
 ## Credits
 
 - Detection pipeline based on [Hailo RPi5 Examples](https://github.com/hailo-ai/hailo-rpi5-examples)
-- Object memory and missing-item workflow inspired by SecondSight
-- Hailo Apps infrastructure for GStreamer integration
+- Object memory workflow inspired by SecondSight
+- Networking via [Tailscale](https://tailscale.com)
