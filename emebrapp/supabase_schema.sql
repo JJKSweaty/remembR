@@ -22,6 +22,7 @@ create table if not exists medications (
   name text not null,
   dosage text,
   schedule text not null,
+  barcode text,
   taken_today boolean default false,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );

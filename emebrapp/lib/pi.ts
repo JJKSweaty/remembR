@@ -35,7 +35,7 @@ export interface FindResult {
 
 export interface MedScanResult {
   type: "med_scan_result";
-  status: "match" | "mismatch" | "uncertain";
+  status: "match" | "mismatch" | "uncertain" | "barcode_only";
   barcode: string | null;
   medication_name: string | null;
   dosage: string | null;
@@ -63,14 +63,69 @@ export interface PiHealthResponse {
   uptime_seconds: number;
 }
 
-// ── URL Helper ───────────────────────────────────────────────────────────────
+// ── URL Helpers ──────────────────────────────────────────────────────────────
 
 export const getPiUrl = (): string => {
   if (typeof window === "undefined") return "";
-  return localStorage.getItem("piUrl") || "http://10.0.0.120:8000";
+  let url = localStorage.getItem("piUrl") || "http://10.0.0.120:8000";
+  if (url && !url.startsWith("http://") && !url.startsWith("https://")) {
+    url = "http://" + url;
+  }
+  return url.replace(/\/+$/, "");
 };
 
-// ── HTTP Endpoints ───────────────────────────────────────────────────────────
+export const getEspUrl = (): string => {
+  if (typeof window === "undefined") return "";
+  let url = localStorage.getItem("espUrl") || "";
+  if (url && !url.startsWith("http://") && !url.startsWith("https://")) {
+    url = "http://" + url;
+  }
+  return url.replace(/\/+$/, "");
+};
+
+// ── ESP32 Camera Endpoints (proxied via Next.js to avoid CORS) ───────────────
+
+const espProxy = async (command: string, timeoutMs = 5000): Promise<boolean> => {
+  const url = getEspUrl();
+  if (!url) return false;
+  try {
+    const res = await fetch(`/api/esp/${command}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ espUrl: url }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const data = await res.json();
+    return data.ok === true;
+  } catch {
+    return false;
+  }
+};
+
+export const checkEspStatus = (): Promise<boolean> => espProxy("status", 3000);
+export const triggerEspSweep = (): Promise<boolean> => espProxy("sweep", 30000);
+export const triggerEspCenter = (): Promise<boolean> => espProxy("center", 5000);
+export const triggerEspPause = async (): Promise<boolean> => {
+  const url = getEspUrl();
+  if (!url) return false;
+  const pauseUrl = `${url}/pause`;
+  try {
+    const res = await fetch(pauseUrl, {
+      method: "POST",
+      signal: AbortSignal.timeout(3000),
+      mode: "no-cors",
+    });
+    const ok = res.ok || res.type === "opaque";
+    console.log("[ESP] pause sent to:", pauseUrl, "result:", ok);
+    return ok;
+  } catch (err) {
+    console.log("[ESP] pause sent to:", pauseUrl, "result: false —", err);
+    return false;
+  }
+};
+export const triggerEspStop = (): Promise<boolean> => espProxy("stop", 5000);
+
+// ── Pi HTTP Endpoints ────────────────────────────────────────────────────────
 
 export const checkPiHealth = async (): Promise<boolean> => {
   try {
@@ -111,6 +166,7 @@ export const scanMedication = async (params: { barcode?: string; medication_name
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
+      signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) return null;
     return (await res.json()) as MedScanResult;
@@ -130,7 +186,10 @@ export const getMedPlan = async () => {
 };
 
 export const getSnapshotUrl = (snapshotPath: string): string => {
-  return `${getPiUrl()}${snapshotPath}`;
+  if (!snapshotPath) return "";
+  const baseUrl = getPiUrl();
+  const normalizedPath = snapshotPath.startsWith("/") ? snapshotPath : `/${snapshotPath}`;
+  return `${baseUrl}${normalizedPath}`;
 };
 
 export const triggerSweep = async (): Promise<boolean> => {
@@ -196,6 +255,7 @@ export const connectPiWebSocket = (callbacks: PiWebSocketCallbacks): { close: ()
             break;
 
           case "snapshot_ready":
+          case "find_snapshot_ready":
             callbacks.onSnapshotReady?.(msg as SnapshotReady);
             break;
 
@@ -252,13 +312,20 @@ export const connectPiWebSocket = (callbacks: PiWebSocketCallbacks): { close: ()
   // Start first connection
   connect();
 
-  // Return a handle to close cleanly
+  // Return a handle to close cleanly + send helpers
   return {
     close: () => {
       intentionallyClosed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (pingInterval) clearInterval(pingInterval);
       ws?.close();
+    },
+    captureSnapshot: () => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "capture_snapshot" }));
+        return true;
+      }
+      return false;
     },
   };
 };

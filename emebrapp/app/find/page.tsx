@@ -7,7 +7,11 @@ import {
   checkPiHealth,
   startFind,
   connectPiWebSocket,
-  wsFindObject,
+  triggerEspSweep,
+  triggerEspCenter,
+  triggerEspStop,
+  triggerEspPause,
+  checkEspStatus,
   getSnapshotUrl,
   type FindResult,
   type PiObject,
@@ -28,18 +32,60 @@ export default function Find() {
   const [findResult, setFindResult] = useState<FindResult | null>(null);
   const [visibleObjects, setVisibleObjects] = useState<PiObject[]>([]);
   const [sweeping, setSweeping] = useState(false);
-  const wsRef = useRef<{ close: () => void } | null>(null);
+  const sweepingRef = useRef(false);
+  const pendingResultRef = useRef<FindResult | null>(null);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const wsRef = useRef<{ close: () => void; captureSnapshot: () => boolean } | null>(null);
+  const selectedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
 
   useEffect(() => {
     preloadVoices();
     checkPiHealth().then((online) => setPiOnline(online));
+
+    const doFreshFind = async () => {
+      const label = selectedRef.current?.toLowerCase() ?? "";
+      if (!label) return null;
+      return await startFind(label, false);
+    };
+
+    // PI TEAM: The WebSocket at ws://<pi-ip>:8000/ws is not connecting.
+    // The browser console shows "WebSocket is closed before connection established".
+    // Until this is fixed, we are falling back to HTTP polling every 1.5 seconds.
+    // Once WebSocket works, the polling loop will be replaced by the onFindResult callback.
 
     // Connect WebSocket for live object tracking
     const wsHandle = connectPiWebSocket({
       onObjectsUpdate: (objects) => setVisibleObjects(objects),
       onFindResult: (result) => handleFindResult(result),
       onSnapshotReady: (snap) => setSnapshotUrl(getSnapshotUrl(snap.url)),
-      onSweepResult: () => setSweeping(false),
+      onSweepResult: async () => {
+        // If we already found the object mid-sweep (handleFindResult set this to false),
+        // don't override that result — just ignore the sweep completion.
+        if (!sweepingRef.current) return;
+
+        setSweeping(false);
+        sweepingRef.current = false;
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
+        }
+        // Sweep just finished — ask Pi for its best result NOW (post-sweep)
+        const fresh = await doFreshFind();
+        if (fresh) {
+          finalizeFind(fresh);
+        } else if (pendingResultRef.current) {
+          finalizeFind(pendingResultRef.current);
+          pendingResultRef.current = null;
+        } else {
+          setPhase("not_found");
+          setOrbMood("idle");
+        }
+      },
       onConnect: () => setPiOnline(true),
       onDisconnect: () => setPiOnline(false),
       onError: (msg) => console.error("Pi error:", msg),
@@ -53,15 +99,77 @@ export default function Find() {
   }, []);
 
   const handleFindResult = (result: FindResult) => {
+    // If found NOW with high confidence — stop, settle, then take a clean photo
+    if (result.found_now) {
+      setSweeping(false);
+      sweepingRef.current = false;
+      pendingResultRef.current = null;
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+
+      // Immediately pause ESP so it's still for the photo, then show result and wait for snapshot
+      if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
+      pauseThenStop();
+      finalizeFind({ ...result, snapshot_url: null });
+      return;
+    }
+
+    // If still sweeping physically, just buffer this result
+    if (sweepingRef.current) {
+      pendingResultRef.current = result;
+      return;
+    }
+
+    // Otherwise, transition immediately
+    finalizeFind(result);
+  };
+
+  // Pause ESP for the photo, then stop after 1.5s so the next sweep can start.
+  const pauseThenStop = () => {
+    triggerEspPause();
+    setTimeout(() => triggerEspStop(), 1500);
+  };
+
+  // After a found_now detection, poll Pi for the snapshot URL (Pi captures ~500ms after pause).
+  // WS is down so we can't wait for find_snapshot_ready — poll /find until snapshot_url appears.
+  const pollForSnapshot = (label: string) => {
+    let attempts = 0;
+    const timer = setInterval(async () => {
+      attempts++;
+      const r = await startFind(label, false);
+      if (r?.snapshot_url) {
+        clearInterval(timer);
+        setSnapshotUrl(getSnapshotUrl(r.snapshot_url));
+      } else if (attempts >= 8) {
+        clearInterval(timer);
+      }
+    }, 750);
+  };
+
+  const finalizeFind = (result: FindResult) => {
+    // Clear safety timeout if it exists
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+
     setFindResult(result);
+
+    if (result.snapshot_url) {
+      setSnapshotUrl(getSnapshotUrl(result.snapshot_url));
+    } else if (result.found_now) {
+      // Snapshot not in this response — poll for it (Pi captures ~500ms after pause)
+      pollForSnapshot(result.label || result.query);
+    } else {
+      setSnapshotUrl(null);
+    }
+
     if (result.found_now) {
       setPhase("found");
       setOrbMood("found");
-      if (result.snapshot_url) {
-        setSnapshotUrl(getSnapshotUrl(result.snapshot_url));
-      }
     } else if (result.last_seen) {
-      // Seen before but not visible now
       setPhase("found");
       setOrbMood("found");
     } else {
@@ -69,7 +177,6 @@ export default function Find() {
       setOrbMood("idle");
     }
 
-    // Speak the result with a warm voice
     if (result.message) {
       speak(result.message);
     }
@@ -80,65 +187,167 @@ export default function Find() {
     return localStorage.getItem("piDemoMode") === "true";
   };
 
+  const [scanPhaseText, setScanPhaseText] = useState("Starting camera sweep…");
+
   const runFakeSimulation = () => {
     setPhase("scanning");
     setOrbMood("scanning");
+    setSweeping(true);
+
+    // Simulate scanning phases
+    setScanPhaseText("Sweeping left…");
+    setTimeout(() => setScanPhaseText("Scanning center…"), 1500);
+    setTimeout(() => setScanPhaseText("Sweeping right…"), 3000);
+    setTimeout(() => setScanPhaseText("Checking memory…"), 4500);
+
+    const demoMode = getDemoMode();
     setTimeout(() => {
-      const fakeResult: FindResult = {
-        type: "find_result",
-        label: selected?.toLowerCase() || "",
-        query: selected?.toLowerCase() || "",
-        found_now: true,
-        last_seen: Date.now() / 1000,
-        last_seen_iso: new Date().toISOString(),
-        last_seen_ago: "just now",
-        region: "center area, on the table",
-        confidence: 0.91,
-        track_id: 1,
-        snapshot_url: null,
-        distance_m: 1.5,
-        distance_text: "about 1.5 meters away",
-        message: `${selected} is visible right now in the center area. Detected with 91% confidence.`,
-      };
-      handleFindResult(fakeResult);
-    }, 2500);
+      setSweeping(false);
+      // If we're in demo mode, simulate a find
+      // If not, it means the Pi is actually offline/error, so report failure
+      const found = demoMode && Math.random() > 0.3;
+      if (found) {
+        handleFindResult({
+          type: "find_result",
+          label: selected?.toLowerCase() || "",
+          query: selected?.toLowerCase() || "",
+          found_now: true,
+          last_seen: Date.now() / 1000,
+          last_seen_iso: new Date().toISOString(),
+          last_seen_ago: "just now",
+          region: "left side, near the couch",
+          confidence: 0.91,
+          track_id: 1,
+          snapshot_url: null,
+          distance_m: 1.5,
+          distance_text: "about 1.5 meters away",
+          message: `I found your ${selected?.toLowerCase()} on the left side, near the couch. Detected with 91% confidence.`,
+        });
+      } else {
+        handleFindResult({
+          type: "find_result",
+          label: selected?.toLowerCase() || "",
+          query: selected?.toLowerCase() || "",
+          found_now: false,
+          last_seen: null,
+          last_seen_iso: null,
+          last_seen_ago: null,
+          region: null,
+          confidence: null,
+          track_id: null,
+          snapshot_url: null,
+          distance_m: null,
+          distance_text: null,
+          message: demoMode 
+            ? `I looked around the room but couldn't spot your ${selected?.toLowerCase()}.`
+            : `I'm having trouble reaching the remembR Pi. Please check if it's online and connected to Tailscale.`,
+        });
+      }
+    }, 5500);
   };
 
-  const start = async (withSweep = false) => {
-    if (!selected) return;
+  const start = async () => {
+    if (!selected || sweepingRef.current) return;
     setSnapshotUrl(null);
     setFindResult(null);
     setPhase("scanning");
     setOrbMood("scanning");
-    if (withSweep) setSweeping(true);
+    setSweeping(true);
+    sweepingRef.current = true;
+    pendingResultRef.current = null;
+    setScanPhaseText("Starting camera sweep…");
 
     const demoMode = getDemoMode();
 
-    if (piOnline && !demoMode) {
+    if (!demoMode) {
       try {
-        // Use HTTP endpoint for find (supports sweep)
-        const result = await startFind(selected.toLowerCase(), withSweep);
-        setSweeping(false);
-        if (result) {
-          handleFindResult(result);
-        } else {
-          runFakeSimulation();
+        // Show scanning phases while ESP sweeps
+        setTimeout(() => setScanPhaseText("Sweeping left…"), 1000);
+        setTimeout(() => setScanPhaseText("Scanning center…"), 3000);
+        setTimeout(() => setScanPhaseText("Sweeping right…"), 6000);
+        setTimeout(() => setScanPhaseText("Checking results…"), 9000);
+
+        // 1. Center camera
+        speak(`Searching for your ${selected.toLowerCase()}. Please wait a moment while I look around the room.`);
+        await triggerEspCenter();
+
+        // 2. Start physical sweep (Fire and forget from frontend perspective)
+        triggerEspSweep();
+
+        // 3. Safety timeout — fires at 20s (after the ~17s sweep finishes).
+        //    Only runs if WebSocket never delivers onSweepResult.
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(async () => {
+          if (sweepingRef.current) {
+            if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
+            setSweeping(false);
+            sweepingRef.current = false;
+            triggerEspStop();
+            const fresh = await startFind(selected.toLowerCase(), false);
+            if (fresh) {
+              finalizeFind(fresh);
+            } else {
+              setPhase("not_found");
+              setOrbMood("idle");
+            }
+          }
+        }, 20000);
+
+        // 4. Tell Pi to start its detection pass (sweep:true = use full pipeline)
+        const piResult = await startFind(selected.toLowerCase(), true);
+        if (piResult) {
+          if (piResult.found_now && sweepingRef.current) {
+            // Found right now via HTTP — pause ESP and finalize immediately
+            if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
+            sweepingRef.current = false;
+            setSweeping(false);
+            if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+            pauseThenStop();
+            finalizeFind({ ...piResult, snapshot_url: null });
+            return;
+          } else {
+            // Not found now — start polling, wait for full sweep to complete
+          }
         }
-      } catch {
+
+        // 5. HTTP polling fallback — only starts AFTER the main find call returns.
+        //    Polls every 1.5s while WebSocket is down. Max 10 polls (~15s).
+        //    If Pi detects found_now:true, pause ESP immediately and finalize.
+        const pollLabel = selected.toLowerCase();
+        let pollCount = 0;
+        pollIntervalRef.current = setInterval(async () => {
+          if (!sweepingRef.current || pollCount >= 18) {
+            if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
+            return;
+          }
+          pollCount++;
+          const pollResult = await startFind(pollLabel, false);
+          if (pollResult?.found_now && sweepingRef.current) {
+            if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
+            sweepingRef.current = false;
+            setSweeping(false);
+            if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+            pauseThenStop();
+            handleFindResult(pollResult);
+          }
+        }, 800);
+      } catch (err) {
+        console.error("Hardware scan error:", err);
         setSweeping(false);
+        sweepingRef.current = false;
         runFakeSimulation();
       }
     } else {
       // Demo mode
-      if (withSweep) {
-        setTimeout(() => setSweeping(false), 3000);
-      }
       runFakeSimulation();
     }
   };
 
   const reset = () => {
     wsRef.current; // keep WS alive
+    if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
+    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
+    sweepingRef.current = false;
     setPhase("idle");
     setSelected(null);
     setOrbMood("idle");
@@ -278,7 +487,7 @@ export default function Find() {
                 marginBottom: 6,
               }}
             >
-              {sweeping ? `Sweeping the room for ${selected}…` : `Looking for your ${selected}…`}
+              {scanPhaseText}
             </p>
             <div
               style={{
@@ -319,6 +528,7 @@ export default function Find() {
                 <img
                   src={snapshotUrl}
                   alt={`Found ${selected}`}
+                  onError={() => setSnapshotUrl(null)}
                   style={{
                     width: "100%",
                     height: 180,
@@ -332,13 +542,20 @@ export default function Find() {
                     height: 120,
                     background: "linear-gradient(160deg, rgba(200,160,100,0.15), rgba(200,120,64,0.08))",
                     display: "flex",
+                    flexDirection: "column",
                     alignItems: "center",
                     justifyContent: "center",
                     color: "rgba(60,40,20,0.25)",
                     fontSize: 13,
+                    gap: 8,
                   }}
                 >
-                  {findResult.found_now ? "Live view" : "No snapshot available"}
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
+                    <circle cx="9" cy="9" r="2"/>
+                    <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+                  </svg>
+                  <span>{findResult.found_now ? "Detecting..." : "No image available"}</span>
                 </div>
               )}
               <div
@@ -484,7 +701,7 @@ export default function Find() {
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button
-                onClick={() => start(true)}
+                onClick={() => start()}
                 style={{
                   flex: 2,
                   background: "linear-gradient(135deg, #f5c084, #c87840)",
@@ -498,7 +715,7 @@ export default function Find() {
                   boxShadow: "0 6px 24px rgba(200,120,64,0.28)",
                 }}
               >
-                Sweep the room
+                Search again
               </button>
               <button
                 onClick={reset}
@@ -562,9 +779,9 @@ export default function Find() {
               ))}
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ marginTop: 4 }}>
               <button
-                onClick={() => start(false)}
+                onClick={() => start()}
                 disabled={!selected}
                 style={{
                   width: "100%",
@@ -585,31 +802,18 @@ export default function Find() {
                   fontFamily:
                     "var(--font-cormorant), 'Cormorant Garamond', serif",
                   letterSpacing: "0.02em",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
                 }}
               >
-                {selected ? `Find my ${selected}` : "Select something first"}
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8" />
+                  <path d="M21 21l-4.35-4.35" />
+                </svg>
+                {selected ? `Sweep for my ${selected}` : "Select something first"}
               </button>
-
-              {selected && piOnline && (
-                <button
-                  onClick={() => start(true)}
-                  style={{
-                    width: "100%",
-                    background: "rgba(255,248,236,0.8)",
-                    color: "rgba(60,40,20,0.55)",
-                    border: "1px solid rgba(200,160,100,0.2)",
-                    borderRadius: 18,
-                    padding: "16px",
-                    fontSize: 14,
-                    fontWeight: 400,
-                    cursor: "pointer",
-                    fontFamily:
-                      "var(--font-cormorant), 'Cormorant Garamond', serif",
-                  }}
-                >
-                  Search with room sweep (~30s)
-                </button>
-              )}
             </div>
           </div>
         )}

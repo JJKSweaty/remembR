@@ -16,18 +16,18 @@ const tabs = [
     path: "M 3 11 a 8 8 0 1 0 16 0 a 8 8 0 0 0 -16 0 M21 21l-4.35-4.35",
   },
   {
-    id: "help",
-    label: "Help",
-    href: "/confused",
-    // Heart icon
-    path: "M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z",
+    id: "wellness",
+    label: "Wellness",
+    href: "/wellness",
+    // Sun icon
+    path: "M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10 M12 1v2 M12 21v2 M4.22 4.22l1.42 1.42 M18.36 18.36l1.42 1.42 M1 12h2 M21 12h2 M4.22 19.78l1.42-1.42 M18.36 5.64l1.42-1.42",
   },
 ];
 
 function pathnameToId(pathname: string): string {
   if (pathname === "/") return "home";
   if (pathname === "/find") return "find";
-  if (pathname === "/confused") return "help";
+  if (pathname === "/wellness") return "wellness";
   if (pathname === "/settings") return "home";
   if (pathname === "/summary") return "home";
   if (pathname === "/meds") return "home";
