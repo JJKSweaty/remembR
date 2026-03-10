@@ -32,6 +32,12 @@ export interface ConfusedEpisode {
   resolved: boolean;
 }
 
+export interface MoodLog {
+  date: string;
+  time: string;
+  mood: "happy" | "tired" | "sad" | "anxious" | "calm";
+}
+
 export interface MealLog {
   meal: string;
   time: string;
@@ -48,6 +54,8 @@ export interface MemoryStore {
     mealsLogged: MealLog[];
   };
   confusedEpisodes: ConfusedEpisode[];
+  moodHistory: MoodLog[];
+  wellnessNotes: { author: string; content: string; date: string }[];
 }
 
 // ── User Profile ─────────────────────────────────────────────────────────────
@@ -92,13 +100,16 @@ export function getUserName(): string {
 const KEY = "ember_memory";
 
 function loadStore(): MemoryStore {
-  if (typeof window === "undefined") return emptyStore();
+  const defaults = emptyStore();
+  if (typeof window === "undefined") return defaults;
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return emptyStore();
-    return JSON.parse(raw) as MemoryStore;
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw);
+    // Merge defaults to handle missing keys in older data
+    return { ...defaults, ...parsed };
   } catch {
-    return emptyStore();
+    return defaults;
   }
 }
 
@@ -109,6 +120,10 @@ function emptyStore(): MemoryStore {
     chatHistory: [],
     routinePatterns: { mealsLogged: [] },
     confusedEpisodes: [],
+    moodHistory: [],
+    wellnessNotes: [
+      { author: "Sarah", content: "Thinking of you today! Can't wait to see you for dinner tonight. Love you!", date: new Date().toISOString() }
+    ],
   };
 }
 
@@ -178,6 +193,39 @@ export function resolveLastConfusedEpisode(): void {
   saveStore(store);
 }
 
+export function logMood(mood: MoodLog["mood"]): void {
+  const store = loadStore();
+  store.moodHistory.push({
+    date: new Date().toLocaleDateString("en-US", { month: "long", day: "numeric" }),
+    time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+    mood,
+  });
+  // Keep last 30 entries
+  if (store.moodHistory.length > 30) {
+    store.moodHistory = store.moodHistory.slice(-30);
+  }
+  saveStore(store);
+}
+
+export function getWellnessNotes() {
+  const store = loadStore();
+  return store.wellnessNotes;
+}
+
+export function addWellnessNote(author: string, content: string): void {
+  const store = loadStore();
+  store.wellnessNotes.unshift({
+    author,
+    content,
+    date: new Date().toISOString(),
+  });
+  // Keep last 5 notes
+  if (store.wellnessNotes.length > 5) {
+    store.wellnessNotes = store.wellnessNotes.slice(0, 5);
+  }
+  saveStore(store);
+}
+
 export function getFullContext(): string {
   const store = loadStore();
   const profile = getUserProfile();
@@ -218,6 +266,13 @@ export function getFullContext(): string {
       const last = yesterday[yesterday.length - 1];
       parts.push(`They had a confused episode at ${last.time} on ${last.date}.`);
     }
+  }
+
+  // Moods
+  const todayMoods = store.moodHistory.filter(m => m.date === today);
+  if (todayMoods.length > 0) {
+    const lastMood = todayMoods[todayMoods.length - 1].mood;
+    parts.push(`They felt ${lastMood} recently.`);
   }
 
   if (parts.length === 0) return "No activity recorded yet today.";

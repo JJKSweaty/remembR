@@ -11,6 +11,7 @@ export default function VoiceButton() {
   const [response, setResponse] = useState<string | null>(null);
   const recognitionRef = useRef<any>(null);
   const responseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transcriptRef = useRef("");
 
   useEffect(() => {
     preloadVoices();
@@ -30,6 +31,7 @@ export default function VoiceButton() {
 
     setState("listening");
     setTranscript("");
+    transcriptRef.current = "";
     setResponse(null);
 
     const recognition = new SpeechRecognition();
@@ -50,12 +52,13 @@ export default function VoiceButton() {
           interim += r[0].transcript;
         }
       }
-      setTranscript(final || interim);
+      const text = final || interim;
+      transcriptRef.current = text;
+      setTranscript(text);
     };
 
     recognition.onend = () => {
-      // Called when speech recognition stops
-      const currentTranscript = recognitionRef.current?._lastTranscript;
+      const currentTranscript = transcriptRef.current;
       if (currentTranscript) {
         processVoice(currentTranscript);
       } else {
@@ -79,22 +82,10 @@ export default function VoiceButton() {
     recognition.start();
   };
 
-  // We need a way to get the final transcript when recognition ends.
-  // Use a ref that gets updated with each result.
-  useEffect(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current._lastTranscript = transcript;
-    }
-  }, [transcript]);
-
   const stopListening = () => {
     if (recognitionRef.current) {
       recognitionRef.current.stop();
-    }
-    if (transcript) {
-      processVoice(transcript);
-    } else {
-      setState("idle");
+      // onend will fire and handle processing via transcriptRef
     }
   };
 
@@ -115,6 +106,14 @@ export default function VoiceButton() {
       });
 
       const data = await res.json();
+
+      if (data._debug) {
+        console.error("[voice _debug]", data._debug);
+        setResponse("Error: " + data._debug);
+        clearResponseAfterDelay(12000);
+        setState("idle");
+        return;
+      }
 
       if (data.spokenResponse) {
         setResponse(data.spokenResponse);
@@ -157,7 +156,7 @@ export default function VoiceButton() {
         <div
           style={{
             position: "fixed",
-            bottom: 140,
+            bottom: 156,
             left: "50%",
             transform: "translateX(-50%)",
             width: "calc(100% - 56px)",
@@ -210,7 +209,7 @@ export default function VoiceButton() {
         disabled={state === "processing"}
         style={{
           position: "fixed",
-          bottom: 90,
+          bottom: 88,
           left: "50%",
           transform: "translateX(-50%)",
           width: 56,
