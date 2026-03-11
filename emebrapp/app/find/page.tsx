@@ -531,9 +531,10 @@ export default function Find() {
                   onError={() => setSnapshotUrl(null)}
                   style={{
                     width: "100%",
-                    height: 180,
-                    objectFit: "cover",
+                    height: "auto",
+                    objectFit: "contain",
                     display: "block",
+                    background: "rgba(248,238,222,0.5)",
                   }}
                 />
               ) : (
