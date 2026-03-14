@@ -39,8 +39,8 @@ static const char *TAG = "pan_tilt";
 
 // --- WiFi credentials ---
 // Change these to match your network name and password
-#define WIFI_SSID "Spruce309"
-#define WIFI_PASS "SpruceSt.309"
+#define WIFI_SSID "309 B/D_EXT"
+#define WIFI_PASS "309SpruceB/D"
 
 // --- Which GPIO pins the servos are wired to ---
 // If your servo doesn't move, double-check these match your wiring
