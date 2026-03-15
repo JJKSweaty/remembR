@@ -108,7 +108,7 @@ class SweepResponse(BaseModel):
 
 
 class PanTiltMoveRequest(BaseModel):
-    pan_us: int | None = Field(default=None, ge=520, le=2520, description="Pan position in microseconds")
+    pan_us: int | None = Field(default=None, ge=500, le=1800, description="Pan position in microseconds")
     tilt_us: int | None = Field(default=None, ge=200, le=1700, description="Tilt position in microseconds")
 
 

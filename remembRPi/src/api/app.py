@@ -38,7 +38,6 @@ from src.services.pan_tilt_service import PanTiltService
 from src.services.barcode_service import BarcodeService
 from src.services.care_plan_service import CarePlanService
 from src.services.lidar_service import LidarService
-from src.services.esp32_state_service import ESP32StateService
 from src.services.drug_lookup_service import scan_and_lookup as drug_scan_and_lookup, drug_info_summary
 
 
@@ -158,15 +157,30 @@ def create_app(config: dict | None = None) -> FastAPI:
     server_cfg = config.get("server", {})
     port = server_cfg.get("port", 8000)
 
-    # Initialize new services
-    esp32_cfg = config.get("esp32", {})
-    esp32_host = esp32_cfg.get("host", "192.168.1.135")
-    esp32_port = esp32_cfg.get("port", 8080)
-
+    # Initialize pan/tilt service (Pi-local PWM via PCA9685 + ServoKit)
+    pantilt_cfg = config.get("pantilt", {})
     pan_tilt_service = PanTiltService(
-        esp32_host=esp32_host,
-        esp32_port=esp32_port,
-        timeout=esp32_cfg.get("sweep_timeout", 30.0),
+        i2c_address=int(pantilt_cfg.get("i2c_address", 0x40)),
+        channels=int(pantilt_cfg.get("channels", 16)),
+        pwm_frequency_hz=int(pantilt_cfg.get("pwm_frequency_hz", 50)),
+        pan_servo=int(pantilt_cfg.get("pan_servo", 1)),
+        tilt_servo=int(pantilt_cfg.get("tilt_servo", 2)),
+        pan_min_us=int(pantilt_cfg.get("pan_min_us", 500)),
+        pan_max_us=int(pantilt_cfg.get("pan_max_us", 1800)),
+        tilt_min_us=int(pantilt_cfg.get("tilt_min_us", 200)),
+        tilt_max_us=int(pantilt_cfg.get("tilt_max_us", 1700)),
+        servo_abs_min_us=int(pantilt_cfg.get("servo_abs_min_us", 200)),
+        servo_abs_max_us=int(pantilt_cfg.get("servo_abs_max_us", 2800)),
+        pan_step_us=int(pantilt_cfg.get("pan_step_us", 55)),
+        tilt_step_us=int(pantilt_cfg.get("tilt_step_us", 55)),
+        step_delay_ms=int(pantilt_cfg.get("step_delay_ms", 120)),
+        edge_delay_ms=int(pantilt_cfg.get("edge_delay_ms", 180)),
+        sweep_timeout_s=float(pantilt_cfg.get("sweep_timeout_s", 18.0)),
+        search_timeout_s=float(pantilt_cfg.get("search_timeout_s", 18.0)),
+        detection_confidence_threshold=float(
+            pantilt_cfg.get("detection_confidence_threshold", 0.60)
+        ),
+        snapshot_delay_ms=int(pantilt_cfg.get("snapshot_delay_ms", 500)),
     )
     care_plan_service = CarePlanService(
         care_plan_path=config.get("care_plan", {}).get("path", "config/care_plan.json"),
@@ -194,11 +208,6 @@ def create_app(config: dict | None = None) -> FastAPI:
         port=lidar_cfg.get("port", "/dev/ttyAMA0"),
         baudrate=lidar_cfg.get("baudrate", 115200),
     )
-    esp32_state_service = ESP32StateService(
-        esp32_host=esp32_host,
-        esp32_port=esp32_port,
-    )
-
     # Store all state for access from routes and WebSocket handlers
     app_state = {
         "config": config,
@@ -222,7 +231,6 @@ def create_app(config: dict | None = None) -> FastAPI:
         "barcode_service": barcode_service,
         "care_plan_service": care_plan_service,
         "lidar_service": lidar_service,
-        "esp32_state_service": esp32_state_service,
         # Latest snapshot URL per label, so polling POST /find can return it
         "latest_snapshots": {},
     }
@@ -253,9 +261,8 @@ def create_app(config: dict | None = None) -> FastAPI:
         # Care plan
         care_plan_service.load()
 
-        # ESP32 pan-tilt connection check
+        # Pan-tilt connection check
         await pan_tilt_service.check_connection()
-        esp32_state_service.set_available(pan_tilt_service.available)
 
         # Barcode scanner (optional hardware)
         barcode_service.start()
@@ -466,9 +473,7 @@ def create_app(config: dict | None = None) -> FastAPI:
     async def handle_sweep(websocket: WebSocket, message: dict) -> dict:
         if not pan_tilt_service.available:
             return {"type": "error", "message": "Pan-tilt controller not connected"}
-        await esp32_state_service.set_state("searching")
         result = await pan_tilt_service.sweep()
-        await esp32_state_service.set_state("idle")
         result["type"] = "sweep_result"
         return result
 

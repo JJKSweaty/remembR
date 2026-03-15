@@ -1,7 +1,7 @@
-// ── Pi Connection Layer ──────────────────────────────────────────────────────
+// â”€â”€ Pi Connection Layer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Matches the remembR Pi API: http/ws on port 8000
 
-// ── Types ────────────────────────────────────────────────────────────────────
+// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export interface PiObject {
   label: string;
@@ -63,69 +63,32 @@ export interface PiHealthResponse {
   uptime_seconds: number;
 }
 
-// ── URL Helpers ──────────────────────────────────────────────────────────────
+// â”€â”€ URL Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+const PI_STORAGE_KEY = "piUrl";
+const DEFAULT_PI_URL = process.env.NEXT_PUBLIC_PI_URL || "http://secondsight.tail1535d0.ts.net:8000";
+const LEGACY_PI_URL = "http://10.0.0.120:8000";
+
+const normalizeHttpUrl = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  return withProtocol.replace(/\/+$/, "");
+};
 
 export const getPiUrl = (): string => {
-  if (typeof window === "undefined") return "";
-  let url = localStorage.getItem("piUrl") || "http://10.0.0.120:8000";
-  if (url && !url.startsWith("http://") && !url.startsWith("https://")) {
-    url = "http://" + url;
+  if (typeof window === "undefined") return normalizeHttpUrl(DEFAULT_PI_URL);
+  const saved = normalizeHttpUrl(localStorage.getItem(PI_STORAGE_KEY) || "");
+  const normalizedDefault = normalizeHttpUrl(DEFAULT_PI_URL);
+  if (!saved || saved === normalizeHttpUrl(LEGACY_PI_URL)) {
+    localStorage.setItem(PI_STORAGE_KEY, normalizedDefault);
+    return normalizedDefault;
   }
-  return url.replace(/\/+$/, "");
+  return saved;
 };
 
-export const getEspUrl = (): string => {
-  if (typeof window === "undefined") return "";
-  let url = localStorage.getItem("espUrl") || "";
-  if (url && !url.startsWith("http://") && !url.startsWith("https://")) {
-    url = "http://" + url;
-  }
-  return url.replace(/\/+$/, "");
-};
 
-// ── ESP32 Camera Endpoints (proxied via Next.js to avoid CORS) ───────────────
-
-const espProxy = async (command: string, timeoutMs = 5000): Promise<boolean> => {
-  const url = getEspUrl();
-  if (!url) return false;
-  try {
-    const res = await fetch(`/api/esp/${command}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ espUrl: url }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const data = await res.json();
-    return data.ok === true;
-  } catch {
-    return false;
-  }
-};
-
-export const checkEspStatus = (): Promise<boolean> => espProxy("status", 3000);
-export const triggerEspSweep = (): Promise<boolean> => espProxy("sweep", 30000);
-export const triggerEspCenter = (): Promise<boolean> => espProxy("center", 5000);
-export const triggerEspPause = async (): Promise<boolean> => {
-  const url = getEspUrl();
-  if (!url) return false;
-  const pauseUrl = `${url}/pause`;
-  try {
-    const res = await fetch(pauseUrl, {
-      method: "POST",
-      signal: AbortSignal.timeout(3000),
-      mode: "no-cors",
-    });
-    const ok = res.ok || res.type === "opaque";
-    console.log("[ESP] pause sent to:", pauseUrl, "result:", ok);
-    return ok;
-  } catch (err) {
-    console.log("[ESP] pause sent to:", pauseUrl, "result: false —", err);
-    return false;
-  }
-};
-export const triggerEspStop = (): Promise<boolean> => espProxy("stop", 5000);
-
-// ── Pi HTTP Endpoints ────────────────────────────────────────────────────────
+// â”€â”€ Pi HTTP Endpoints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const checkPiHealth = async (): Promise<boolean> => {
   try {
@@ -201,7 +164,7 @@ export const triggerSweep = async (): Promise<boolean> => {
   }
 };
 
-// ── WebSocket ────────────────────────────────────────────────────────────────
+// â”€â”€ WebSocket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export interface PiWebSocketCallbacks {
   onObjectsUpdate?: (objects: PiObject[]) => void;
@@ -213,6 +176,14 @@ export interface PiWebSocketCallbacks {
   onDisconnect?: () => void;
   onConnect?: () => void;
 }
+
+type IncomingWsMessage = {
+  type?: string;
+  objects?: PiObject[];
+  message?: string;
+  status?: string;
+  duration_seconds?: number;
+} & Record<string, unknown>;
 
 export const connectPiWebSocket = (callbacks: PiWebSocketCallbacks): { close: () => void } => {
   let ws: WebSocket | null = null;
@@ -243,7 +214,7 @@ export const connectPiWebSocket = (callbacks: PiWebSocketCallbacks): { close: ()
 
     ws.onmessage = (e) => {
       try {
-        const msg = JSON.parse(e.data as string) as any;
+        const msg = JSON.parse(e.data as string) as IncomingWsMessage;
 
         switch (msg.type) {
           case "objects_update":
@@ -330,7 +301,7 @@ export const connectPiWebSocket = (callbacks: PiWebSocketCallbacks): { close: ()
   };
 };
 
-// ── WebSocket send helpers ───────────────────────────────────────────────────
+// â”€â”€ WebSocket send helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export const wsFindObject = (ws: WebSocket, label: string) => {
   ws.send(JSON.stringify({ type: "find_object", label }));
@@ -351,3 +322,4 @@ export const wsMedScan = (ws: WebSocket, params: { barcode?: string; medication_
 export const wsSweep = (ws: WebSocket) => {
   ws.send(JSON.stringify({ type: "sweep" }));
 };
+

@@ -21,7 +21,7 @@ cd ~/Desktop/remembR
 - **Friendly label names** - COCO labels are translated to human-friendly names (e.g. `handbag` → `wallet`) in all API responses, WebSocket broadcasts, and bounding box overlays
 - **Label aliases** - Fuzzy query matching: "phone", "mobile", "smartphone" all resolve to cell phone detection; "wallet", "billfold", "purse" all resolve to handbag detection
 - **Per-label confidence tuning** - Smaller or harder objects (bottle, cup, remote, wallet) use lower thresholds so they aren't silently dropped; phone stays at 75%+ to avoid false positives
-- **Pan-tilt sweep** - ESP32-controlled camera mount can sweep the room to find objects not currently in frame
+- **Pan-tilt sweep** - Pi-controlled PCA9685 camera mount can sweep the room to find objects not currently in frame
 - **Persistent memory** - Object history survives restarts via JSON persistence
 - **Tailscale networking** - Stable, private, encrypted connection; both team members' devices are full tailnet members
 
@@ -30,7 +30,7 @@ cd ~/Desktop/remembR
 - Raspberry Pi 5 (8GB)
 - Hailo-8L AI HAT+ (13 TOPS)
 - USB webcam at 1080p (e.g. Logitech Brio 100)
-- ESP32-S3 controlling a pan-tilt servo mount
+- PCA9685 PWM servo controller for pan-tilt mount (driven by Raspberry Pi)
 
 ## Prerequisites
 
@@ -303,7 +303,7 @@ All tunable settings are in `config/app_config.yaml`. Key sections:
 - `detection` — allowed labels, per-label confidence, debounce window, min bbox area
 - `memory` — persistence path, history limits, stale thresholds
 - `snapshots` — save directory, JPEG quality, retention policy
-- `esp32` — pan-tilt controller IP and port
+- `pantilt` — Pi PWM pan/tilt mapping, safety bounds, and sweep tuning
 
 Label aliases and display name overrides (e.g. `handbag` → `wallet`) are in `config/labels.yaml`.
 

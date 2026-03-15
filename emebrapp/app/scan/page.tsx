@@ -24,13 +24,13 @@
 // If the Pi can't see a barcode, return { barcode: null } — the app will show
 // a "couldn't see it" error and let the user try again.
 //
-// The ESP32 is already centered before this call (triggerEspCenter).
+// The Pi pan/tilt service handles camera positioning before scan.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useEffect } from "react";
 import PageWrapper from "@/components/PageWrapper";
 import Orb from "@/components/Orb";
-import { scanMedication, triggerEspCenter, triggerEspStop, type MedScanResult } from "@/lib/pi";
+import { scanMedication, type MedScanResult } from "@/lib/pi";
 import { speak, preloadVoices } from "@/lib/speech";
 
 type Phase = "idle" | "scanning" | "result";
@@ -113,8 +113,6 @@ export default function ScanPage() {
 
     try {
       speak("Hold your medication bottle in front of the camera.");
-      await triggerEspCenter();
-
       setScanStatus("Reading barcode…");
       const piResult = await scanMedication({});
 
@@ -132,8 +130,6 @@ export default function ScanPage() {
         speak("I couldn't see the barcode. Try holding it a bit closer.");
         return;
       }
-
-      triggerEspStop();
 
       // If Pi already did full verification (has medication info + status), use it directly.
       // Only fall back to Supabase if Pi returned barcode_only (raw scan, no care plan check).

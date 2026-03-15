@@ -7,11 +7,6 @@ import {
   checkPiHealth,
   startFind,
   connectPiWebSocket,
-  triggerEspSweep,
-  triggerEspCenter,
-  triggerEspStop,
-  triggerEspPause,
-  checkEspStatus,
   getSnapshotUrl,
   type FindResult,
   type PiObject,
@@ -31,61 +26,18 @@ export default function Find() {
   const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null);
   const [findResult, setFindResult] = useState<FindResult | null>(null);
   const [visibleObjects, setVisibleObjects] = useState<PiObject[]>([]);
-  const [sweeping, setSweeping] = useState(false);
   const sweepingRef = useRef(false);
-  const pendingResultRef = useRef<FindResult | null>(null);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const wsRef = useRef<{ close: () => void; captureSnapshot: () => boolean } | null>(null);
-  const selectedRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    selectedRef.current = selected;
-  }, [selected]);
 
   useEffect(() => {
     preloadVoices();
     checkPiHealth().then((online) => setPiOnline(online));
-
-    const doFreshFind = async () => {
-      const label = selectedRef.current?.toLowerCase() ?? "";
-      if (!label) return null;
-      return await startFind(label, false);
-    };
-
-    // PI TEAM: The WebSocket at ws://<pi-ip>:8000/ws is not connecting.
-    // The browser console shows "WebSocket is closed before connection established".
-    // Until this is fixed, we are falling back to HTTP polling every 1.5 seconds.
-    // Once WebSocket works, the polling loop will be replaced by the onFindResult callback.
 
     // Connect WebSocket for live object tracking
     const wsHandle = connectPiWebSocket({
       onObjectsUpdate: (objects) => setVisibleObjects(objects),
       onFindResult: (result) => handleFindResult(result),
       onSnapshotReady: (snap) => setSnapshotUrl(getSnapshotUrl(snap.url)),
-      onSweepResult: async () => {
-        // If we already found the object mid-sweep (handleFindResult set this to false),
-        // don't override that result — just ignore the sweep completion.
-        if (!sweepingRef.current) return;
-
-        setSweeping(false);
-        sweepingRef.current = false;
-        if (timeoutRef.current) {
-          clearTimeout(timeoutRef.current);
-          timeoutRef.current = null;
-        }
-        // Sweep just finished — ask Pi for its best result NOW (post-sweep)
-        const fresh = await doFreshFind();
-        if (fresh) {
-          finalizeFind(fresh);
-        } else if (pendingResultRef.current) {
-          finalizeFind(pendingResultRef.current);
-          pendingResultRef.current = null;
-        } else {
-          setPhase("not_found");
-          setOrbMood("idle");
-        }
-      },
       onConnect: () => setPiOnline(true),
       onDisconnect: () => setPiOnline(false),
       onError: (msg) => console.error("Pi error:", msg),
@@ -99,41 +51,13 @@ export default function Find() {
   }, []);
 
   const handleFindResult = (result: FindResult) => {
-    // If found NOW with high confidence — stop, settle, then take a clean photo
     if (result.found_now) {
-      setSweeping(false);
       sweepingRef.current = false;
-      pendingResultRef.current = null;
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
-
-      // Immediately pause ESP so it's still for the photo, then show result and wait for snapshot
-      if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
-      pauseThenStop();
-      finalizeFind({ ...result, snapshot_url: null });
-      return;
     }
-
-    // If still sweeping physically, just buffer this result
-    if (sweepingRef.current) {
-      pendingResultRef.current = result;
-      return;
-    }
-
-    // Otherwise, transition immediately
     finalizeFind(result);
   };
 
-  // Pause ESP for the photo, then stop after 1.5s so the next sweep can start.
-  const pauseThenStop = () => {
-    triggerEspPause();
-    setTimeout(() => triggerEspStop(), 1500);
-  };
-
-  // After a found_now detection, poll Pi for the snapshot URL (Pi captures ~500ms after pause).
-  // WS is down so we can't wait for find_snapshot_ready — poll /find until snapshot_url appears.
+  // If snapshot URL arrives slightly after the find result, poll briefly.
   const pollForSnapshot = (label: string) => {
     let attempts = 0;
     const timer = setInterval(async () => {
@@ -149,18 +73,11 @@ export default function Find() {
   };
 
   const finalizeFind = (result: FindResult) => {
-    // Clear safety timeout if it exists
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-
     setFindResult(result);
 
     if (result.snapshot_url) {
       setSnapshotUrl(getSnapshotUrl(result.snapshot_url));
     } else if (result.found_now) {
-      // Snapshot not in this response — poll for it (Pi captures ~500ms after pause)
       pollForSnapshot(result.label || result.query);
     } else {
       setSnapshotUrl(null);
@@ -192,7 +109,6 @@ export default function Find() {
   const runFakeSimulation = () => {
     setPhase("scanning");
     setOrbMood("scanning");
-    setSweeping(true);
 
     // Simulate scanning phases
     setScanPhaseText("Sweeping left…");
@@ -202,7 +118,6 @@ export default function Find() {
 
     const demoMode = getDemoMode();
     setTimeout(() => {
-      setSweeping(false);
       // If we're in demo mode, simulate a find
       // If not, it means the Pi is actually offline/error, so report failure
       const found = demoMode && Math.random() > 0.3;
@@ -252,88 +167,31 @@ export default function Find() {
     setFindResult(null);
     setPhase("scanning");
     setOrbMood("scanning");
-    setSweeping(true);
     sweepingRef.current = true;
-    pendingResultRef.current = null;
     setScanPhaseText("Starting camera sweep…");
 
     const demoMode = getDemoMode();
 
     if (!demoMode) {
       try {
-        // Show scanning phases while ESP sweeps
+        // Show scanning phases while Pi pan/tilt search runs
         setTimeout(() => setScanPhaseText("Sweeping left…"), 1000);
         setTimeout(() => setScanPhaseText("Scanning center…"), 3000);
         setTimeout(() => setScanPhaseText("Sweeping right…"), 6000);
         setTimeout(() => setScanPhaseText("Checking results…"), 9000);
 
-        // 1. Center camera
         speak(`Searching for your ${selected.toLowerCase()}. Please wait a moment while I look around the room.`);
-        await triggerEspCenter();
-
-        // 2. Start physical sweep (Fire and forget from frontend perspective)
-        triggerEspSweep();
-
-        // 3. Safety timeout — fires at 20s (after the ~17s sweep finishes).
-        //    Only runs if WebSocket never delivers onSweepResult.
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        timeoutRef.current = setTimeout(async () => {
-          if (sweepingRef.current) {
-            if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
-            setSweeping(false);
-            sweepingRef.current = false;
-            triggerEspStop();
-            const fresh = await startFind(selected.toLowerCase(), false);
-            if (fresh) {
-              finalizeFind(fresh);
-            } else {
-              setPhase("not_found");
-              setOrbMood("idle");
-            }
-          }
-        }, 20000);
-
-        // 4. Tell Pi to start its detection pass (sweep:true = use full pipeline)
         const piResult = await startFind(selected.toLowerCase(), true);
-        if (piResult) {
-          if (piResult.found_now && sweepingRef.current) {
-            // Found right now via HTTP — pause ESP and finalize immediately
-            if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
-            sweepingRef.current = false;
-            setSweeping(false);
-            if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
-            pauseThenStop();
-            finalizeFind({ ...piResult, snapshot_url: null });
-            return;
-          } else {
-            // Not found now — start polling, wait for full sweep to complete
-          }
-        }
+        sweepingRef.current = false;
 
-        // 5. HTTP polling fallback — only starts AFTER the main find call returns.
-        //    Polls every 1.5s while WebSocket is down. Max 10 polls (~15s).
-        //    If Pi detects found_now:true, pause ESP immediately and finalize.
-        const pollLabel = selected.toLowerCase();
-        let pollCount = 0;
-        pollIntervalRef.current = setInterval(async () => {
-          if (!sweepingRef.current || pollCount >= 18) {
-            if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
-            return;
-          }
-          pollCount++;
-          const pollResult = await startFind(pollLabel, false);
-          if (pollResult?.found_now && sweepingRef.current) {
-            if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
-            sweepingRef.current = false;
-            setSweeping(false);
-            if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
-            pauseThenStop();
-            handleFindResult(pollResult);
-          }
-        }, 800);
+        if (piResult) {
+          finalizeFind(piResult);
+        } else {
+          setPhase("not_found");
+          setOrbMood("idle");
+        }
       } catch (err) {
         console.error("Hardware scan error:", err);
-        setSweeping(false);
         sweepingRef.current = false;
         runFakeSimulation();
       }
@@ -344,16 +202,12 @@ export default function Find() {
   };
 
   const reset = () => {
-    wsRef.current; // keep WS alive
-    if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
-    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
     sweepingRef.current = false;
     setPhase("idle");
     setSelected(null);
     setOrbMood("idle");
     setSnapshotUrl(null);
     setFindResult(null);
-    setSweeping(false);
   };
 
   const speakResult = () => {

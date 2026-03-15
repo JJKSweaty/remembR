@@ -147,19 +147,38 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
     Optionally triggers a pan-tilt sweep before searching.
     """
     finder = request.app.state.finder
+    memory = request.app.state.memory
     runner = getattr(request.app.state, "hailo_runner", None)
     snapshot_dir = getattr(request.app.state, "snapshot_dir", "data/snapshots")
     pan_tilt = getattr(request.app.state, "pan_tilt_service", None)
     lidar = getattr(request.app.state, "lidar_service", None)
-    esp32_state = getattr(request.app.state, "esp32_state_service", None)
+    latest_snapshots = getattr(request.app.state, "latest_snapshots", {})
 
-    # Set companion state to searching
-    if esp32_state:
-        await esp32_state.set_state("searching")
+    resolved_label = finder.resolve_label(body.label)
 
-    # Trigger sweep if requested and pan-tilt is available
+    # New active searches should not reuse stale snapshot URLs from prior runs.
+    if body.sweep:
+        latest_snapshots.pop(resolved_label, None)
+
+    # Active search: serpentine sweep + immediate stop on confirmed target detection.
+    found_during_sweep = False
     if body.sweep and pan_tilt and pan_tilt.available:
-        await pan_tilt.sweep()
+        min_conf = getattr(pan_tilt, "detection_confidence_threshold", 0.60)
+
+        def _target_detected() -> bool:
+            obj = memory.find_object(resolved_label)
+            if obj is None or not obj.visible_now:
+                return False
+            return obj.latest_confidence >= min_conf
+
+        sweep_result = await pan_tilt.search_for_target(_target_detected)
+        found_during_sweep = sweep_result.get("status") == "found"
+        log.info(
+            "Active find sweep for '%s' finished with status=%s in %.2fs",
+            resolved_label,
+            sweep_result.get("status"),
+            sweep_result.get("duration_seconds", 0.0),
+        )
 
     result = finder.find(body.label)
 
@@ -170,16 +189,22 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
             result["distance_m"] = dist_info["distance_m"]
             result["distance_text"] = dist_info["distance_text"]
 
-    # Resolve the COCO label for snapshot lookup
-    resolved_label = finder.resolve_label(body.label)
+    # If the object is visible right now, wait for camera/servo settle then
+    # take one clear snapshot from the normal camera pipeline.
+    snapshot_delay_s = 0.5
+    if pan_tilt:
+        snapshot_delay_s = getattr(pan_tilt, "snapshot_delay_seconds", 0.5)
 
-    # If the object is visible right now, wait 500ms for the frame to
-    # stabilise then take a snapshot.
-    if result.get("found_now") and runner:
-        await asyncio.sleep(0.5)
+    should_capture_snapshot = (
+        (bool(result.get("found_now")) or found_during_sweep)
+        and runner is not None
+        and (body.sweep or not latest_snapshots.get(resolved_label))
+    )
+
+    if should_capture_snapshot:
+        await asyncio.sleep(snapshot_delay_s)
         frame = runner.get_latest_frame()
         if frame is not None:
-            memory = request.app.state.memory
             dn = getattr(request.app.state, "display_names", {})
             # Use all recently-seen objects for bounding box drawing
             all_objects = memory.get_all_objects()
@@ -193,23 +218,15 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
             result["snapshot_url"] = snapshot_url
 
             # Store for subsequent polling
-            latest_snapshots = getattr(request.app.state, "latest_snapshots", {})
-            latest_snapshots[resolved_label] = snapshot_url
+            if snapshot_url:
+                latest_snapshots[resolved_label] = snapshot_url
 
     # If we don't have a snapshot_url yet but a previous find stored one,
     # return it so the mobile app's polling picks it up.
     if not result.get("snapshot_url"):
-        latest_snapshots = getattr(request.app.state, "latest_snapshots", {})
         stored_url = latest_snapshots.get(resolved_label)
         if stored_url:
             result["snapshot_url"] = stored_url
-
-    # Set companion state based on result
-    if esp32_state:
-        if result.get("found_now"):
-            await esp32_state.set_state("found")
-        else:
-            await esp32_state.set_state("idle")
 
     return FindResponse(**result)
 
@@ -266,14 +283,7 @@ async def sweep(request: Request) -> SweepResponse:
     if pan_tilt is None or not pan_tilt.available:
         return SweepResponse(status="unavailable", message="Pan-tilt controller not connected")
 
-    esp32_state = getattr(request.app.state, "esp32_state_service", None)
-    if esp32_state:
-        await esp32_state.set_state("searching")
-
     result = await pan_tilt.sweep()
-
-    if esp32_state:
-        await esp32_state.set_state("idle")
 
     return SweepResponse(**result)
 
@@ -558,7 +568,6 @@ async def status(request: Request) -> StatusResponse:
     barcode = getattr(app_state, "barcode_service", None)
     care_plan = getattr(app_state, "care_plan_service", None)
     lidar = getattr(app_state, "lidar_service", None)
-    esp32_state = getattr(app_state, "esp32_state_service", None)
     camera_settings = getattr(app_state, "camera_settings", {})
     camera_stream = getattr(app_state, "camera_stream", {})
 
@@ -589,7 +598,7 @@ async def status(request: Request) -> StatusResponse:
         barcode=barcode.to_status_dict() if barcode else {},
         care_plan=care_plan.to_status_dict() if care_plan else {},
         lidar=lidar.to_status_dict() if lidar else {},
-        companion=esp32_state.to_status_dict() if esp32_state else {},
+        companion={},
     )
 
 

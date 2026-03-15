@@ -20,6 +20,23 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## remembR Network Defaults
+
+Set Tailscale-first defaults in `.env.local`:
+
+```bash
+NEXT_PUBLIC_PI_URL=http://secondsight.tail1535d0.ts.net:8000
+```
+
+The app will use these values when `localStorage` is empty, and users can still override them in **Settings**.
+
+Quick connectivity check from your PC:
+
+```bash
+tailscale ping secondsight
+curl --noproxy '*' http://secondsight.tail1535d0.ts.net:8000/health
+```
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

@@ -9,6 +9,10 @@ import { showToast } from "@/lib/voice";
 
 type OrbMood = "idle" | "scanning" | "happy";
 type TestStatus = null | "testing" | "connected" | "failed";
+const DEFAULT_PI_URL = process.env.NEXT_PUBLIC_PI_URL || "http://secondsight.tail1535d0.ts.net:8000";
+const LEGACY_PI_URL = "http://10.0.0.120:8000";
+
+const normalizeUrl = (value: string) => value.trim().replace(/\/+$/, "");
 
 const inputStyle: React.CSSProperties = {
   width: "100%",
@@ -34,9 +38,19 @@ const labelStyle: React.CSSProperties = {
 };
 
 export default function Settings() {
-  const [piUrl, setPiUrl] = useState("http://remembr-pi.tail1234.ts.net:8000");
-  const [espUrl, setEspUrl] = useState("");
-  const [demoMode, setDemoMode] = useState(false);
+  const [piUrl, setPiUrl] = useState(() => {
+    if (typeof window === "undefined") return DEFAULT_PI_URL;
+    const saved = localStorage.getItem("piUrl") || "";
+    const normalizedSaved = normalizeUrl(saved);
+    if (!normalizedSaved || normalizedSaved === normalizeUrl(LEGACY_PI_URL)) {
+      return DEFAULT_PI_URL;
+    }
+    return saved;
+  });
+  const [demoMode, setDemoMode] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("piDemoMode") === "true";
+  });
   const [orbMood, setOrbMood] = useState<OrbMood>("idle");
   const [testStatus, setTestStatus] = useState<TestStatus>(null);
 
@@ -50,14 +64,11 @@ export default function Settings() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const saved = localStorage.getItem("piUrl");
-    if (saved) setPiUrl(saved);
-    const savedEsp = localStorage.getItem("espUrl");
-    if (savedEsp) setEspUrl(savedEsp);
-    setDemoMode(localStorage.getItem("piDemoMode") === "true");
-
-    // Load from localStorage first (instant)
-    setProfile(getUserProfile());
+    const saved = localStorage.getItem("piUrl") || "";
+    const normalizedSaved = normalizeUrl(saved);
+    if (!normalizedSaved || normalizedSaved === normalizeUrl(LEGACY_PI_URL)) {
+      localStorage.setItem("piUrl", DEFAULT_PI_URL);
+    }
 
     // Then try to load from Supabase (source of truth)
     fetch("/api/profile")
@@ -239,32 +250,12 @@ export default function Settings() {
               type="text"
               value={piUrl}
               onChange={e => handleUrlChange(e.target.value)}
-              placeholder="http://remembr-pi.tail1234.ts.net:8000"
+              placeholder={DEFAULT_PI_URL}
               style={inputStyle}
             />
           </div>
           <p style={{ fontSize: 11, color: "rgba(60,40,20,0.3)", marginTop: 6, fontWeight: 300 }}>
             Use your Pi&apos;s Tailscale hostname or IP (e.g., http://100.x.y.z:8000).
-          </p>
-        </div>
-
-        {/* ESP URL */}
-        <div style={{ marginBottom: 24, animation: "fadeUp 0.5s ease 0.17s both" }}>
-          <p style={labelStyle}>ESP32 Camera address (WiFi)</p>
-          <div style={fieldBox}>
-            <input
-              type="text"
-              value={espUrl}
-              onChange={e => {
-                setEspUrl(e.target.value);
-                if (typeof window !== "undefined") localStorage.setItem("espUrl", e.target.value);
-              }}
-              placeholder="http://192.168.x.x:8080"
-              style={inputStyle}
-            />
-          </div>
-          <p style={{ fontSize: 11, color: "rgba(60,40,20,0.3)", marginTop: 6, fontWeight: 300 }}>
-            ESP32 IP on your WiFi (port 8080). Controls the camera pan/tilt sweep.
           </p>
         </div>
 

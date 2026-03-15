@@ -33,6 +33,12 @@ else
     echo "WARNING: Hailo venv not found at $HAILO_EXAMPLES"
     echo "  Detection pipeline may not work without it."
     echo "  Set HAILO_EXAMPLES_PATH to override."
+    if [ -d "$SCRIPT_DIR/.venv" ]; then
+        echo "Activating local virtual environment..."
+        # shellcheck disable=SC1090
+        source "$SCRIPT_DIR/.venv/bin/activate"
+        echo "  Local venv active"
+    fi
     export PYTHONPATH="$SCRIPT_DIR:${PYTHONPATH:-}"
 fi
 
