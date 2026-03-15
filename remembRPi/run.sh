@@ -16,10 +16,35 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 HAILO_EXAMPLES="${HAILO_EXAMPLES_PATH:-$HOME/hailo-rpi5-examples}"
+USER_ID="$(id -u)"
 
 echo "=================================="
 echo "  remembR - Edge AI Object Finder"
 echo "=================================="
+
+# Ensure GUI/runtime env vars exist for GTK/Hailo apps.
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "${XDG_RUNTIME_DIR:-}" ]; then
+    if [ -d "/run/user/$USER_ID" ]; then
+        export XDG_RUNTIME_DIR="/run/user/$USER_ID"
+    else
+        export XDG_RUNTIME_DIR="/tmp/xdg-runtime-$USER_ID"
+        mkdir -p "$XDG_RUNTIME_DIR"
+        chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+    fi
+fi
+
+# Use an installed UTF-8 locale to avoid GTK locale fallback warnings.
+if command -v locale >/dev/null 2>&1; then
+    if [ -z "${LANG:-}" ] || ! locale -a 2>/dev/null | grep -qi "^${LANG//./\\.}\$"; then
+        for candidate in C.UTF-8 en_US.utf8; do
+            if locale -a 2>/dev/null | grep -qi "^${candidate//./\\.}\$"; then
+                export LANG="$candidate"
+                export LC_ALL="$candidate"
+                break
+            fi
+        done
+    fi
+fi
 
 # Activate Hailo venv if available
 if [ -d "$HAILO_EXAMPLES/venv_hailo_rpi_examples" ]; then
