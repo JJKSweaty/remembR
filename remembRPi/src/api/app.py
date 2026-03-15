@@ -173,6 +173,7 @@ def create_app(config: dict | None = None) -> FastAPI:
         servo_abs_max_us=int(pantilt_cfg.get("servo_abs_max_us", 2800)),
         pan_step_us=int(pantilt_cfg.get("pan_step_us", 30)),
         tilt_step_us=int(pantilt_cfg.get("tilt_step_us", 12)),
+        tilt_probe_us=int(pantilt_cfg.get("tilt_probe_us", 12)),
         step_delay_ms=int(pantilt_cfg.get("step_delay_ms", 180)),
         edge_delay_ms=int(pantilt_cfg.get("edge_delay_ms", 260)),
         sweep_timeout_s=float(pantilt_cfg.get("sweep_timeout_s", 30.0)),

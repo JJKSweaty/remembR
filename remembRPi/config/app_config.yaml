@@ -132,6 +132,7 @@ pantilt:
   # Serpentine scan tuning
   pan_step_us: 30
   tilt_step_us: 12
+  tilt_probe_us: 12
   step_delay_ms: 180
   edge_delay_ms: 260
   detection_confidence_threshold: 0.60

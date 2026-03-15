@@ -43,6 +43,7 @@ class PanTiltService:
         servo_abs_max_us: int = 2800,
         pan_step_us: int = 30,
         tilt_step_us: int = 12,
+        tilt_probe_us: int = 12,
         step_delay_ms: int = 180,
         edge_delay_ms: int = 260,
         sweep_timeout_s: float = 30.0,
@@ -72,6 +73,7 @@ class PanTiltService:
 
         self._pan_step_us = max(1, int(pan_step_us))
         self._tilt_step_us = max(1, int(tilt_step_us))
+        self._tilt_probe_us = max(1, int(tilt_probe_us))
         self._step_delay_s = max(0.01, float(step_delay_ms) / 1000.0)
         self._edge_delay_s = max(0.01, float(edge_delay_ms) / 1000.0)
         self._sweep_timeout_s = max(0.5, float(sweep_timeout_s))
@@ -261,62 +263,54 @@ class PanTiltService:
             self._sweeping = True
             self._stop_event.clear()
             try:
-                # Start from current position and scan with slow pan + slight
-                # tilt adjustment on every step.
-                pan_direction = (
-                    1
-                    if abs(self._pan_us - self._pan_min_us)
-                    <= abs(self._pan_us - self._pan_max_us)
-                    else -1
-                )
-                tilt_direction = (
-                    1
-                    if abs(self._tilt_us - self._tilt_min_us)
-                    <= abs(self._tilt_us - self._tilt_max_us)
-                    else -1
-                )
+                # One-way scan only: pick a single direction from current pan
+                # and do not reverse at the end (prevents the "end spin").
+                pan_mid = (self._pan_min_us + self._pan_max_us) // 2
+                pan_direction = 1 if self._pan_us <= pan_mid else -1
+                pan_end = self._pan_max_us if pan_direction > 0 else self._pan_min_us
+                tilt_center = (self._tilt_min_us + self._tilt_max_us) // 2
+                tilt_up = self._clamp_tilt(tilt_center - self._tilt_probe_us)
+                tilt_down = self._clamp_tilt(tilt_center + self._tilt_probe_us)
 
                 # Ensure outputs are initialized.
                 self._apply_position(pan_us=self._pan_us, tilt_us=self._tilt_us)
+                await self._move_to_locked(pan_target=None, tilt_target=tilt_center)
 
-                while (time.monotonic() - started) < timeout_s:
+                while (
+                    (time.monotonic() - started) < timeout_s
+                    and self._pan_us != pan_end
+                ):
                     if self._stop_event.is_set():
                         return self._result("stopped", "Sweep stopped", started)
                     if self._target_detected(target_detected):
                         return self._result("found", "Target detected", started)
 
-                    hit_pan_edge = False
-
                     next_pan = self._pan_us + (pan_direction * self._pan_step_us)
-                    if next_pan >= self._pan_max_us:
-                        next_pan = self._pan_max_us
-                        pan_direction = -1
-                        hit_pan_edge = True
-                    elif next_pan <= self._pan_min_us:
-                        next_pan = self._pan_min_us
-                        pan_direction = 1
-                        hit_pan_edge = True
-
-                    next_tilt = self._tilt_us + (tilt_direction * self._tilt_step_us)
-                    if next_tilt >= self._tilt_max_us:
-                        next_tilt = self._tilt_max_us
-                        tilt_direction = -1
-                    elif next_tilt <= self._tilt_min_us:
-                        next_tilt = self._tilt_min_us
-                        tilt_direction = 1
+                    if pan_direction > 0:
+                        next_pan = min(next_pan, pan_end)
+                    else:
+                        next_pan = max(next_pan, pan_end)
 
                     await self._move_to_locked(
                         pan_target=next_pan,
-                        tilt_target=next_tilt,
+                        tilt_target=None,
                     )
+
+                    # At each small pan step: slight tilt up -> down -> center.
+                    for tilt_target in (tilt_up, tilt_down, tilt_center):
+                        if self._stop_event.is_set():
+                            return self._result("stopped", "Sweep stopped", started)
+                        if self._target_detected(target_detected):
+                            return self._result("found", "Target detected", started)
+                        await self._move_to_locked(
+                            pan_target=None,
+                            tilt_target=tilt_target,
+                        )
 
                     if self._target_detected(target_detected):
                         return self._result("found", "Target detected", started)
                     if (time.monotonic() - started) >= timeout_s:
                         break
-
-                    if hit_pan_edge:
-                        await asyncio.sleep(self._edge_delay_s)
 
                 status = "timeout" if target_detected else "ok"
                 message = "Search timed out" if target_detected else "Sweep complete"
@@ -439,6 +433,7 @@ class PanTiltService:
             "tilt_max_us": self._tilt_max_us,
             "pan_step_us": self._pan_step_us,
             "tilt_step_us": self._tilt_step_us,
+            "tilt_probe_us": self._tilt_probe_us,
             "step_delay_ms": int(self._step_delay_s * 1000),
             "edge_delay_ms": int(self._edge_delay_s * 1000),
             "search_timeout_s": self._search_timeout_s,
