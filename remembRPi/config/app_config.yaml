@@ -130,13 +130,13 @@ pantilt:
   servo_abs_max_us: 2800
 
   # Serpentine scan tuning
-  pan_step_us: 55
-  tilt_step_us: 55
-  step_delay_ms: 120
-  edge_delay_ms: 180
+  pan_step_us: 30
+  tilt_step_us: 12
+  step_delay_ms: 180
+  edge_delay_ms: 260
   detection_confidence_threshold: 0.60
-  search_timeout_s: 18.0
-  sweep_timeout_s: 18.0
+  search_timeout_s: 30.0
+  sweep_timeout_s: 30.0
   snapshot_delay_ms: 500
 
 barcode:

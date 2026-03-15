@@ -162,23 +162,32 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
 
     # Active search: serpentine sweep + immediate stop on confirmed target detection.
     found_during_sweep = False
-    if body.sweep and pan_tilt and pan_tilt.available:
-        min_conf = getattr(pan_tilt, "detection_confidence_threshold", 0.60)
+    active_search_status: str | None = None
+    if body.sweep:
+        if pan_tilt and pan_tilt.available:
+            min_conf = getattr(pan_tilt, "detection_confidence_threshold", 0.60)
 
-        def _target_detected() -> bool:
-            obj = memory.find_object(resolved_label)
-            if obj is None or not obj.visible_now:
-                return False
-            return obj.latest_confidence >= min_conf
+            def _target_detected() -> bool:
+                obj = memory.find_object(resolved_label)
+                if obj is None or not obj.visible_now:
+                    return False
+                return obj.latest_confidence >= min_conf
 
-        sweep_result = await pan_tilt.search_for_target(_target_detected)
-        found_during_sweep = sweep_result.get("status") == "found"
-        log.info(
-            "Active find sweep for '%s' finished with status=%s in %.2fs",
-            resolved_label,
-            sweep_result.get("status"),
-            sweep_result.get("duration_seconds", 0.0),
-        )
+            sweep_result = await pan_tilt.search_for_target(_target_detected)
+            active_search_status = sweep_result.get("status")
+            found_during_sweep = active_search_status == "found"
+            log.info(
+                "Active find sweep for '%s' finished with status=%s in %.2fs",
+                resolved_label,
+                active_search_status,
+                sweep_result.get("duration_seconds", 0.0),
+            )
+        else:
+            active_search_status = "unavailable"
+            log.warning(
+                "Active find sweep requested for '%s' but pan/tilt is unavailable",
+                resolved_label,
+            )
 
     result = finder.find(body.label)
 
@@ -206,11 +215,11 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
         frame = runner.get_latest_frame()
         if frame is not None:
             dn = getattr(request.app.state, "display_names", {})
-            # Use all recently-seen objects for bounding box drawing
+            # Draw only the requested target label on snapshots.
             all_objects = memory.get_all_objects()
             recent_objects = [
                 o for o in all_objects
-                if (time.time() - o.last_seen) < 5.0
+                if (time.time() - o.last_seen) < 5.0 and o.label == resolved_label
             ]
             detections = _objects_to_detection_records(recent_objects, dn)
             snapshot_url = _save_snapshot(frame, body.label, snapshot_dir, request,
@@ -221,12 +230,34 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
             if snapshot_url:
                 latest_snapshots[resolved_label] = snapshot_url
 
-    # If we don't have a snapshot_url yet but a previous find stored one,
-    # return it so the mobile app's polling picks it up.
-    if not result.get("snapshot_url"):
+    # Only return a previously stored snapshot for "found now" style responses.
+    # This avoids showing stale/broken images for historical "last seen" results.
+    if (
+        not result.get("snapshot_url")
+        and (bool(result.get("found_now")) or found_during_sweep)
+    ):
         stored_url = latest_snapshots.get(resolved_label)
         if stored_url:
-            result["snapshot_url"] = stored_url
+            stored_file = Path(snapshot_dir) / Path(stored_url).name
+            if stored_file.exists():
+                result["snapshot_url"] = stored_url
+            else:
+                latest_snapshots.pop(resolved_label, None)
+
+    # In sweep mode, do not attach a stale snapshot when we only have "last seen" memory.
+    if body.sweep and not (bool(result.get("found_now")) or found_during_sweep):
+        result["snapshot_url"] = None
+
+    # Make unavailable active search explicit in the response message.
+    if body.sweep and active_search_status == "unavailable":
+        base_message = str(result.get("message", "")).strip()
+        if base_message:
+            result["message"] = (
+                "Active pan/tilt search is unavailable right now. "
+                f"{base_message}"
+            )
+        else:
+            result["message"] = "Active pan/tilt search is unavailable right now."
 
     return FindResponse(**result)
 

@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover - hardware dependency
 
 
 class PanTiltService:
-    """Pi-local pan/tilt service with interruptible serpentine search sweep."""
+    """Pi-local pan/tilt service with interruptible slow search sweep."""
 
     def __init__(
         self,
@@ -41,12 +41,12 @@ class PanTiltService:
         tilt_max_us: int = 1700,
         servo_abs_min_us: int = 200,
         servo_abs_max_us: int = 2800,
-        pan_step_us: int = 55,
-        tilt_step_us: int = 55,
-        step_delay_ms: int = 120,
-        edge_delay_ms: int = 180,
-        sweep_timeout_s: float = 18.0,
-        search_timeout_s: float = 18.0,
+        pan_step_us: int = 30,
+        tilt_step_us: int = 12,
+        step_delay_ms: int = 180,
+        edge_delay_ms: int = 260,
+        sweep_timeout_s: float = 30.0,
+        search_timeout_s: float = 30.0,
         detection_confidence_threshold: float = 0.60,
         snapshot_delay_ms: int = 500,
     ):
@@ -261,60 +261,61 @@ class PanTiltService:
             self._sweeping = True
             self._stop_event.clear()
             try:
+                # Start from current position and scan with slow pan + slight
+                # tilt adjustment on every step.
+                pan_direction = (
+                    1
+                    if abs(self._pan_us - self._pan_min_us)
+                    <= abs(self._pan_us - self._pan_max_us)
+                    else -1
+                )
+                tilt_direction = (
+                    1
+                    if abs(self._tilt_us - self._tilt_min_us)
+                    <= abs(self._tilt_us - self._tilt_max_us)
+                    else -1
+                )
+
+                # Ensure outputs are initialized.
+                self._apply_position(pan_us=self._pan_us, tilt_us=self._tilt_us)
+
                 while (time.monotonic() - started) < timeout_s:
-                    row_order = self._build_tilt_row_order(self._tilt_us)
-                    pan_direction = (
-                        1
-                        if abs(self._pan_us - self._pan_min_us)
-                        <= abs(self._pan_us - self._pan_max_us)
-                        else -1
+                    if self._stop_event.is_set():
+                        return self._result("stopped", "Sweep stopped", started)
+                    if self._target_detected(target_detected):
+                        return self._result("found", "Target detected", started)
+
+                    hit_pan_edge = False
+
+                    next_pan = self._pan_us + (pan_direction * self._pan_step_us)
+                    if next_pan >= self._pan_max_us:
+                        next_pan = self._pan_max_us
+                        pan_direction = -1
+                        hit_pan_edge = True
+                    elif next_pan <= self._pan_min_us:
+                        next_pan = self._pan_min_us
+                        pan_direction = 1
+                        hit_pan_edge = True
+
+                    next_tilt = self._tilt_us + (tilt_direction * self._tilt_step_us)
+                    if next_tilt >= self._tilt_max_us:
+                        next_tilt = self._tilt_max_us
+                        tilt_direction = -1
+                    elif next_tilt <= self._tilt_min_us:
+                        next_tilt = self._tilt_min_us
+                        tilt_direction = 1
+
+                    await self._move_to_locked(
+                        pan_target=next_pan,
+                        tilt_target=next_tilt,
                     )
 
-                    for row_tilt in row_order:
-                        if self._stop_event.is_set():
-                            return self._result("stopped", "Sweep stopped", started)
-                        if self._target_detected(target_detected):
-                            return self._result("found", "Target detected", started)
-                        if (time.monotonic() - started) >= timeout_s:
-                            break
+                    if self._target_detected(target_detected):
+                        return self._result("found", "Target detected", started)
+                    if (time.monotonic() - started) >= timeout_s:
+                        break
 
-                        if self._tilt_us == row_tilt and not self._tilt_initialized:
-                            self._apply_position(pan_us=None, tilt_us=row_tilt)
-                        while self._tilt_us != row_tilt:
-                            if self._stop_event.is_set():
-                                return self._result("stopped", "Sweep stopped", started)
-                            if self._target_detected(target_detected):
-                                return self._result("found", "Target detected", started)
-                            if (time.monotonic() - started) >= timeout_s:
-                                break
-
-                            next_tilt = self._step_towards(
-                                self._tilt_us, row_tilt, self._tilt_step_us
-                            )
-                            self._apply_position(pan_us=None, tilt_us=next_tilt)
-                            await asyncio.sleep(self._step_delay_s)
-
-                        pan_target = self._pan_max_us if pan_direction > 0 else self._pan_min_us
-                        while self._pan_us != pan_target:
-                            if self._stop_event.is_set():
-                                return self._result("stopped", "Sweep stopped", started)
-                            if self._target_detected(target_detected):
-                                return self._result("found", "Target detected", started)
-                            if (time.monotonic() - started) >= timeout_s:
-                                break
-
-                            next_pan = self._step_towards(
-                                self._pan_us, pan_target, self._pan_step_us
-                            )
-                            self._apply_position(pan_us=next_pan, tilt_us=None)
-                            await asyncio.sleep(self._step_delay_s)
-
-                        if self._target_detected(target_detected):
-                            return self._result("found", "Target detected", started)
-                        if (time.monotonic() - started) >= timeout_s:
-                            break
-
-                        pan_direction *= -1
+                    if hit_pan_edge:
                         await asyncio.sleep(self._edge_delay_s)
 
                 status = "timeout" if target_detected else "ok"
@@ -358,21 +359,6 @@ class PanTiltService:
 
             self._apply_position(pan_us=next_pan, tilt_us=next_tilt)
             await asyncio.sleep(self._step_delay_s)
-
-    def _build_tilt_row_order(self, start_tilt_us: int) -> list[int]:
-        rows: list[int] = []
-        tilt = self._tilt_min_us
-        while tilt < self._tilt_max_us:
-            rows.append(tilt)
-            tilt += self._tilt_step_us
-        if not rows or rows[-1] != self._tilt_max_us:
-            rows.append(self._tilt_max_us)
-
-        start_tilt_us = self._clamp_tilt(start_tilt_us)
-        nearest_idx = min(range(len(rows)), key=lambda i: abs(rows[i] - start_tilt_us))
-
-        # Start near current tilt, go toward max first, then back toward min.
-        return rows[nearest_idx:] + list(reversed(rows[:nearest_idx]))
 
     def _target_detected(self, target_detected: Callable[[], bool] | None) -> bool:
         if target_detected is None:

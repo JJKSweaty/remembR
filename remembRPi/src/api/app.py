@@ -171,12 +171,12 @@ def create_app(config: dict | None = None) -> FastAPI:
         tilt_max_us=int(pantilt_cfg.get("tilt_max_us", 1700)),
         servo_abs_min_us=int(pantilt_cfg.get("servo_abs_min_us", 200)),
         servo_abs_max_us=int(pantilt_cfg.get("servo_abs_max_us", 2800)),
-        pan_step_us=int(pantilt_cfg.get("pan_step_us", 55)),
-        tilt_step_us=int(pantilt_cfg.get("tilt_step_us", 55)),
-        step_delay_ms=int(pantilt_cfg.get("step_delay_ms", 120)),
-        edge_delay_ms=int(pantilt_cfg.get("edge_delay_ms", 180)),
-        sweep_timeout_s=float(pantilt_cfg.get("sweep_timeout_s", 18.0)),
-        search_timeout_s=float(pantilt_cfg.get("search_timeout_s", 18.0)),
+        pan_step_us=int(pantilt_cfg.get("pan_step_us", 30)),
+        tilt_step_us=int(pantilt_cfg.get("tilt_step_us", 12)),
+        step_delay_ms=int(pantilt_cfg.get("step_delay_ms", 180)),
+        edge_delay_ms=int(pantilt_cfg.get("edge_delay_ms", 260)),
+        sweep_timeout_s=float(pantilt_cfg.get("sweep_timeout_s", 30.0)),
+        search_timeout_s=float(pantilt_cfg.get("search_timeout_s", 30.0)),
         detection_confidence_threshold=float(
             pantilt_cfg.get("detection_confidence_threshold", 0.60)
         ),
@@ -346,6 +346,7 @@ def create_app(config: dict | None = None) -> FastAPI:
         if not label:
             return {"type": "error", "message": "Missing 'label' field for find"}
         result = finder.find(label)
+        resolved_label = finder.resolve_label(label)
 
         # If found now, send the find result immediately so the phone
         # knows we spotted the object, then wait 500ms for the frame to
@@ -365,11 +366,11 @@ def create_app(config: dict | None = None) -> FastAPI:
                     return
 
                 from src.api.routes import _save_snapshot, _objects_to_detection_records
-                # Get all recently-seen objects for bounding box drawing
+                # Draw only the requested target label on this find snapshot.
                 all_objects = memory.get_all_objects()
                 recent_objects = [
                     o for o in all_objects
-                    if (time.time() - o.last_seen) < 5.0
+                    if (time.time() - o.last_seen) < 5.0 and o.label == resolved_label
                 ]
                 detections = _objects_to_detection_records(recent_objects, display_names)
 
@@ -379,7 +380,7 @@ def create_app(config: dict | None = None) -> FastAPI:
 
                 if url:
                     # Store for subsequent polling via POST /find
-                    app_state["latest_snapshots"][label] = url
+                    app_state["latest_snapshots"][resolved_label] = url
 
                     await ws_manager.send_to(websocket, {
                         "type": "find_snapshot_ready",
