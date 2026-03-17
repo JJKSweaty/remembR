@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { parseTimeToDate } from "@/lib/time";
 
 interface MedCardProps {
   id: string;
@@ -12,22 +13,11 @@ interface MedCardProps {
   animationDelay?: number;
 }
 
-function parseScheduleTime(timeStr: string): Date {
-  const now = new Date();
-  const [timePart, period] = timeStr.trim().split(" ");
-  const [hStr, mStr] = timePart.split(":");
-  let h = parseInt(hStr, 10);
-  const m = parseInt(mStr ?? "0", 10);
-  if (period?.toUpperCase() === "PM" && h !== 12) h += 12;
-  if (period?.toUpperCase() === "AM" && h === 12) h = 0;
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
-}
-
 type Status = "taken" | "overdue" | "pending";
 
 function getStatus(taken_today: boolean, schedule: string): Status {
   if (taken_today) return "taken";
-  if (parseScheduleTime(schedule) < new Date()) return "overdue";
+  if (parseTimeToDate(schedule) < new Date()) return "overdue";
   return "pending";
 }
 
@@ -41,14 +31,17 @@ export default function MedCard({
   animationDelay = 0,
 }: MedCardProps) {
   const [flash, setFlash] = useState(false);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const status = getStatus(taken_today, schedule);
   const isTaken = status === "taken";
   const isOverdue = status === "overdue";
 
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
+
   const handleTap = () => {
     if (!taken_today) {
       setFlash(true);
-      setTimeout(() => setFlash(false), 600);
+      flashTimer.current = setTimeout(() => setFlash(false), 600);
     }
     onToggle(id, !taken_today);
   };

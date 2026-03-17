@@ -41,17 +41,12 @@ export default function Toast() {
     if (timer) { clearTimeout(timer); timersRef.current.delete(id); }
   };
 
-  const handleMarkTaken = async (toast: ToastItem) => {
-    if (!toast.action?.medId) return;
+  const handleAction = async (toast: ToastItem) => {
     dismiss(toast.id);
     try {
-      await fetch("/api/medications", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: toast.action.medId, taken_today: true }),
-      });
+      await toast.action?.onAction?.();
     } catch {
-      // Silently ignore — user dismissed the toast regardless
+      // Silently ignore — toast already dismissed
     }
   };
 
@@ -107,7 +102,7 @@ export default function Toast() {
 
             {t.action?.type === "mark_taken" && (
               <button
-                onClick={() => handleMarkTaken(t)}
+                onClick={() => handleAction(t)}
                 style={{
                   marginTop: 8,
                   background: "linear-gradient(135deg, #f5c084, #c87840)",

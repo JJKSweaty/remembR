@@ -7,6 +7,7 @@ import MedCard from "@/components/MedCard";
 import ProgressRing from "@/components/ProgressRing";
 import { logMedication, getFullContext } from "@/lib/memory";
 import { showToast } from "@/lib/voice";
+import { parseTimeToDate } from "@/lib/time";
 
 type OrbMood = "idle" | "scanning" | "happy";
 
@@ -76,13 +77,7 @@ export default function Meds() {
     const now = new Date();
     const overdue = meds.find((med) => {
       if (med.taken_today) return false;
-      const [timePart, period] = med.schedule.trim().split(" ");
-      const [hStr, mStr] = timePart.split(":");
-      let h = parseInt(hStr, 10);
-      const m = parseInt(mStr ?? "0", 10);
-      if (period?.toUpperCase() === "PM" && h !== 12) h += 12;
-      if (period?.toUpperCase() === "AM" && h === 12) h = 0;
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m) < now;
+      return parseTimeToDate(med.schedule) < now;
     });
     if (!overdue) return;
     const t = setTimeout(() => {

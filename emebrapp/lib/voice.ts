@@ -15,6 +15,7 @@ export interface ToastAction {
   label: string;
   type: "mark_taken";
   medId: string;
+  onAction?: () => Promise<void>;
 }
 
 /** Show an Ember toast notification without speaking. */

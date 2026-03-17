@@ -104,16 +104,16 @@ export default function Find() {
     return localStorage.getItem("piDemoMode") === "true";
   };
 
-  const [scanPhaseText, setScanPhaseText] = useState("Starting camera sweep…");
+  const [scanPhaseText, setScanPhaseText] = useState("Looking around the room…");
 
   const runFakeSimulation = () => {
     setPhase("scanning");
     setOrbMood("scanning");
 
     // Simulate scanning phases
-    setScanPhaseText("Sweeping left…");
+    setScanPhaseText("Looking around the room…");
     setTimeout(() => setScanPhaseText("Scanning center…"), 1500);
-    setTimeout(() => setScanPhaseText("Sweeping right…"), 3000);
+    setTimeout(() => setScanPhaseText("Checking all corners…"), 3000);
     setTimeout(() => setScanPhaseText("Checking memory…"), 4500);
 
     const demoMode = getDemoMode();
@@ -168,20 +168,20 @@ export default function Find() {
     setPhase("scanning");
     setOrbMood("scanning");
     sweepingRef.current = true;
-    setScanPhaseText("Starting camera sweep…");
+    setScanPhaseText("Looking around the room…");
 
     const demoMode = getDemoMode();
 
     if (!demoMode) {
       try {
-        // Show scanning phases while Pi pan/tilt search runs
-        setTimeout(() => setScanPhaseText("Sweeping left…"), 1000);
+        // Show scanning phases while Pi searches
+        setTimeout(() => setScanPhaseText("Looking around the room…"), 1000);
         setTimeout(() => setScanPhaseText("Scanning center…"), 3000);
-        setTimeout(() => setScanPhaseText("Sweeping right…"), 6000);
+        setTimeout(() => setScanPhaseText("Checking all corners…"), 6000);
         setTimeout(() => setScanPhaseText("Checking results…"), 9000);
 
         speak(`Searching for your ${selected.toLowerCase()}. Please wait a moment while I look around the room.`);
-        const piResult = await startFind(selected.toLowerCase(), true);
+        const piResult = await startFind(selected.toLowerCase(), false);
         sweepingRef.current = false;
 
         if (piResult) {
@@ -667,7 +667,7 @@ export default function Find() {
                   <circle cx="11" cy="11" r="8" />
                   <path d="M21 21l-4.35-4.35" />
                 </svg>
-                {selected ? `Sweep for my ${selected}` : "Select something first"}
+                {selected ? `Find my ${selected}` : "Select something first"}
               </button>
             </div>
           </div>

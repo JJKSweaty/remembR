@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Orb from "@/components/Orb";
 import PageWrapper from "@/components/PageWrapper";
 import { getUserName, getUserProfile } from "@/lib/memory";
+import { parseTimeToMinutes } from "@/lib/time";
 
 interface TimelineItem {
   id: string;
@@ -18,14 +19,6 @@ interface TimelineItem {
   past: boolean;
 }
 
-function parseMinutes(timeStr: string): number {
-  const [timePart, period] = timeStr.split(" ");
-  const [h, m] = timePart.split(":").map(Number);
-  let hour = h;
-  if (period === "PM" && h !== 12) hour += 12;
-  if (period === "AM" && h === 12) hour = 0;
-  return hour * 60 + m;
-}
 
 function getSectionLabel(minutes: number): string {
   if (minutes < 720) return "Morning";
@@ -80,7 +73,7 @@ export default function Home() {
       label: item.label,
       sub: item.time,
       time: item.time,
-      minutes: parseMinutes(item.time),
+      minutes: parseTimeToMinutes(item.time),
       isMed: false,
       done: false,
       current: false,
@@ -107,7 +100,7 @@ export default function Home() {
             label: med.name,
             sub: `${med.schedule}`,
             time: medTime,
-            minutes: parseMinutes(medTime),
+            minutes: parseTimeToMinutes(medTime),
             isMed: true,
             done: med.taken_today,
             current: false,

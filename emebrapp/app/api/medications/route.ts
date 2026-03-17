@@ -1,23 +1,29 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
+// Module-level cache: midnight reset only needs one DB query per day per process
+let lastResetDate = "";
+
 export async function GET() {
   try {
-    // Midnight reset — wrapped in its own try/catch so a schema mismatch
-    // (e.g. columns not yet migrated) never prevents medications from loading
+    // Midnight reset — runs at most once per day per server process
+    // Wrapped in try/catch so schema drift never blocks the main SELECT
     try {
       const today = new Date().toISOString().split("T")[0]; // "YYYY-MM-DD"
-      const { data: stale } = await supabase
-        .from("medications")
-        .select("id")
-        .or(`last_reset_date.is.null,last_reset_date.lt.${today}`)
-        .limit(1);
-
-      if (stale && stale.length > 0) {
-        await supabase
+      if (lastResetDate !== today) {
+        const { data: stale } = await supabase
           .from("medications")
-          .update({ taken_today: false, taken_at: null, last_reset_date: today })
-          .not("id", "is", null);
+          .select("id")
+          .or(`last_reset_date.is.null,last_reset_date.lt.${today}`)
+          .limit(1);
+
+        if (stale && stale.length > 0) {
+          await supabase
+            .from("medications")
+            .update({ taken_today: false, taken_at: null, last_reset_date: today })
+            .not("id", "is", null);
+        }
+        lastResetDate = today;
       }
     } catch (resetErr) {
       console.warn("Midnight reset skipped (columns may not exist yet):", resetErr);

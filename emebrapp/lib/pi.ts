@@ -155,14 +155,6 @@ export const getSnapshotUrl = (snapshotPath: string): string => {
   return `${baseUrl}${normalizedPath}`;
 };
 
-export const triggerSweep = async (): Promise<boolean> => {
-  try {
-    const res = await fetch(`${getPiUrl()}/pantilt/sweep`, { method: "POST" });
-    return res.ok;
-  } catch {
-    return false;
-  }
-};
 
 // â”€â”€ WebSocket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -171,7 +163,6 @@ export interface PiWebSocketCallbacks {
   onFindResult?: (result: FindResult) => void;
   onSnapshotReady?: (snapshot: SnapshotReady) => void;
   onMedScanResult?: (result: MedScanResult) => void;
-  onSweepResult?: (result: { status: string; message: string; duration_seconds: number }) => void;
   onError?: (message: string) => void;
   onDisconnect?: () => void;
   onConnect?: () => void;
@@ -185,7 +176,7 @@ type IncomingWsMessage = {
   duration_seconds?: number;
 } & Record<string, unknown>;
 
-export const connectPiWebSocket = (callbacks: PiWebSocketCallbacks): { close: () => void } => {
+export const connectPiWebSocket = (callbacks: PiWebSocketCallbacks): { close: () => void; captureSnapshot: () => boolean } => {
   let ws: WebSocket | null = null;
   let reconnectDelay = 1000;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -222,24 +213,20 @@ export const connectPiWebSocket = (callbacks: PiWebSocketCallbacks): { close: ()
             break;
 
           case "find_result":
-            callbacks.onFindResult?.(msg as FindResult);
+            callbacks.onFindResult?.(msg as unknown as FindResult);
             break;
 
           case "snapshot_ready":
           case "find_snapshot_ready":
-            callbacks.onSnapshotReady?.(msg as SnapshotReady);
+            callbacks.onSnapshotReady?.(msg as unknown as SnapshotReady);
             break;
 
           case "med_scan_result":
-            callbacks.onMedScanResult?.(msg as MedScanResult);
+            callbacks.onMedScanResult?.(msg as unknown as MedScanResult);
             // Speak the result aloud with a warm voice
             if (msg.message) {
-              import("@/lib/speech").then(({ speak: s }) => s(msg.message));
+              import("@/lib/speech").then(({ speak: s }) => s(msg.message!));
             }
-            break;
-
-          case "sweep_result":
-            callbacks.onSweepResult?.(msg);
             break;
 
           case "error":
@@ -319,7 +306,4 @@ export const wsMedScan = (ws: WebSocket, params: { barcode?: string; medication_
   ws.send(JSON.stringify({ type: "start_med_scan", ...params }));
 };
 
-export const wsSweep = (ws: WebSocket) => {
-  ws.send(JSON.stringify({ type: "sweep" }));
-};
 

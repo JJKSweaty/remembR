@@ -5,6 +5,7 @@ import BottomNav from "@/components/BottomNav";
 import Toast from "@/components/Toast";
 import VoiceButton from "@/components/VoiceButton";
 import { showToast } from "@/lib/voice";
+import { parseTimeToMinutes } from "@/lib/time";
 
 interface PageWrapperProps {
   children: React.ReactNode;
@@ -16,16 +17,6 @@ interface Med {
   dosage: string;
   schedule: string;
   taken_today: boolean;
-}
-
-function parseScheduleMinutes(timeStr: string): number {
-  const [timePart, period] = timeStr.trim().split(" ");
-  const [hStr, mStr] = timePart.split(":");
-  let h = parseInt(hStr, 10);
-  const m = parseInt(mStr ?? "0", 10);
-  if (period?.toUpperCase() === "PM" && h !== 12) h += 12;
-  if (period?.toUpperCase() === "AM" && h === 12) h = 0;
-  return h * 60 + m;
 }
 
 export default function PageWrapper({ children }: PageWrapperProps) {
@@ -47,7 +38,7 @@ export default function PageWrapper({ children }: PageWrapperProps) {
 
         meds.forEach((med) => {
           if (med.taken_today) return;
-          const scheduledMinutes = parseScheduleMinutes(med.schedule);
+          const scheduledMinutes = parseTimeToMinutes(med.schedule);
           const minutesPast = nowMinutes - scheduledMinutes;
 
           // Fire once per med per day, within the first 30 minutes past schedule
@@ -57,7 +48,18 @@ export default function PageWrapper({ children }: PageWrapperProps) {
               localStorage.setItem(key, "1");
               showToast(
                 `💊 Time for your ${med.name} (${med.dosage}).`,
-                { label: "Mark as Taken", type: "mark_taken", medId: med.id }
+                {
+                  label: "Mark as Taken",
+                  type: "mark_taken",
+                  medId: med.id,
+                  onAction: async () => {
+                    await fetch("/api/medications", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ id: med.id, taken_today: true }),
+                    });
+                  },
+                }
               );
             }
           }
@@ -67,9 +69,10 @@ export default function PageWrapper({ children }: PageWrapperProps) {
       }
     };
 
-    checkMeds();
+    // Delay initial check 5s so it doesn't pile onto page-load fetches
+    const initial = setTimeout(checkMeds, 5_000);
     const interval = setInterval(checkMeds, 60_000);
-    return () => clearInterval(interval);
+    return () => { clearTimeout(initial); clearInterval(interval); };
   }, []);
 
   return (
