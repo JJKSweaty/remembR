@@ -24,8 +24,14 @@ create table if not exists medications (
   schedule text not null,
   barcode text,
   taken_today boolean default false,
+  taken_at timestamp with time zone,
+  last_reset_date date,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+
+-- Run these if upgrading from the initial schema:
+-- alter table medications add column if not exists taken_at timestamp with time zone;
+-- alter table medications add column if not exists last_reset_date date;
 
 -- Medication history (every time a med is taken or skipped)
 create table if not exists medication_history (

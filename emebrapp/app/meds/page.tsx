@@ -3,43 +3,48 @@
 import { useState, useEffect } from "react";
 import Orb from "@/components/Orb";
 import PageWrapper from "@/components/PageWrapper";
-import { logMedication, getFullContext, getUserProfile, getUserName } from "@/lib/memory";
+import MedCard from "@/components/MedCard";
+import ProgressRing from "@/components/ProgressRing";
+import { logMedication, getFullContext } from "@/lib/memory";
 import { showToast } from "@/lib/voice";
 
 type OrbMood = "idle" | "scanning" | "happy";
 
 interface Med {
-  id: number;
+  id: string;
   name: string;
-  dose: string;
-  time: string;
-  taken: boolean;
+  dosage: string;
+  schedule: string;
+  taken_today: boolean;
+  taken_at?: string | null;
 }
 
 export default function Meds() {
   const [meds, setMeds] = useState<Med[]>([]);
-  const [userName, setUserName] = useState("");
-  const [flash, setFlash] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [aiMessage, setAiMessage] = useState<string | null>(null);
   const [orbMood, setOrbMood] = useState<OrbMood>("scanning");
 
-  // Load user profile medications
+  // Load medications from Supabase (GET handles midnight reset automatically)
   useEffect(() => {
-    const profile = getUserProfile();
-    setUserName(getUserName());
-    if (profile.medications.length > 0) {
-      setMeds(profile.medications.map((m, i) => ({
-        id: i + 1,
-        name: m.name,
-        dose: m.dose,
-        time: m.time,
-        taken: false,
-      })));
-    }
+    const fetchMeds = async () => {
+      try {
+        const res = await fetch("/api/medications");
+        const data = await res.json() as { medications: Med[] };
+        setMeds(data.medications || []);
+      } catch {
+        setLoadError(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchMeds();
   }, []);
 
-  // Fetch AI reminder on mount
+  // Fetch AI reminder once meds are loaded
   useEffect(() => {
+    if (loading) return;
     if (meds.length === 0) {
       setAiMessage("Add your medications in Settings to track them here.");
       setOrbMood("idle");
@@ -55,74 +60,124 @@ export default function Meds() {
         });
         const data = await res.json() as { message: string };
         setAiMessage(data.message);
-        setOrbMood("idle");
       } catch {
-        const fallback = `Here are your medicines for today.`;
-        setAiMessage(fallback);
+        setAiMessage("Here are your medicines for today.");
+      } finally {
         setOrbMood("idle");
       }
     };
     fetchReminder();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meds.length]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
-  // Check for overdue meds (time has passed, not taken) — toast notification
+  // Toast for the first overdue med when page loads
   useEffect(() => {
-    if (meds.length === 0) return;
+    if (loading || meds.length === 0) return;
     const now = new Date();
-    const overdue = meds.filter(med => {
-      if (med.taken) return false;
-      const [timePart, period] = med.time.split(" ");
-      const [h, m] = timePart.split(":").map(Number);
-      let hour = h;
-      if (period === "PM" && h !== 12) hour += 12;
-      if (period === "AM" && h === 12) hour = 0;
-      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, m) < now;
+    const overdue = meds.find((med) => {
+      if (med.taken_today) return false;
+      const [timePart, period] = med.schedule.trim().split(" ");
+      const [hStr, mStr] = timePart.split(":");
+      let h = parseInt(hStr, 10);
+      const m = parseInt(mStr ?? "0", 10);
+      if (period?.toUpperCase() === "PM" && h !== 12) h += 12;
+      if (period?.toUpperCase() === "AM" && h === 12) h = 0;
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m) < now;
     });
-    if (overdue.length > 0) {
-      const med = overdue[0];
-      const t = setTimeout(() => {
-        setOrbMood("scanning");
-        showToast(`💊 Don't forget your ${med.name}. You usually take it around ${med.time}.`);
-        setTimeout(() => setOrbMood("idle"), 4000);
-      }, 2000);
-      return () => clearTimeout(t);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meds]);
+    if (!overdue) return;
+    const t = setTimeout(() => {
+      setOrbMood("scanning");
+      showToast(`💊 Don't forget your ${overdue.name}. Due at ${overdue.schedule}.`);
+      setTimeout(() => setOrbMood("idle"), 4000);
+    }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
 
-  const taken = meds.filter(m => m.taken).length;
-  const all = meds.length;
-  const allDone = taken === all;
-  const displayOrbMood: OrbMood = allDone ? "happy" : orbMood;
+  const handleToggle = async (id: string, taken: boolean) => {
+    // Optimistic update
+    setMeds((prev) =>
+      prev.map((m) =>
+        m.id === id
+          ? { ...m, taken_today: taken, taken_at: taken ? new Date().toISOString() : null }
+          : m
+      )
+    );
 
-  const toggle = (id: number) => {
-    const med = meds.find(m => m.id === id);
-    if (med && !med.taken) {
-      setFlash(id);
-      setTimeout(() => setFlash(null), 600);
-      logMedication({ name: med.name, dose: med.dose, time: med.time, taken: true });
+    // Local backup for AI context
+    const med = meds.find((m) => m.id === id);
+    if (med && taken) {
+      logMedication({ name: med.name, dose: med.dosage, time: med.schedule, taken: true });
     }
-    setMeds(m => m.map(x => x.id === id ? { ...x, taken: !x.taken } : x));
+
+    try {
+      const res = await fetch("/api/medications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, taken_today: taken }),
+      });
+      if (!res.ok) throw new Error("Failed");
+    } catch {
+      // Revert on failure
+      setMeds((prev) => prev.map((m) => (m.id === id ? { ...m, taken_today: !taken } : m)));
+      showToast("Couldn't save. Please try again.");
+    }
   };
+
+  const taken = meds.filter((m) => m.taken_today).length;
+  const total = meds.length;
+  const allDone = total > 0 && taken === total;
+  const displayOrbMood: OrbMood = allDone ? "happy" : orbMood;
 
   return (
     <PageWrapper>
       <div style={{ padding: "0 28px 120px", animation: "fadeUp 0.35s ease both" }}>
+
+        {/* Header */}
         <div style={{ animation: "fadeUp 0.5s ease both", marginBottom: 28 }}>
-          <p style={{ fontSize: 11, color: "rgba(60,40,20,0.35)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 8 }}>Today&apos;s medicines</p>
-          <h2 style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 40, fontWeight: 300, color: "#2a1a08", letterSpacing: "-0.3px", lineHeight: 1.1 }}>
+          <p style={{
+            fontSize: 11,
+            color: "rgba(60,40,20,0.35)",
+            letterSpacing: "0.16em",
+            textTransform: "uppercase",
+            marginBottom: 8,
+          }}>
+            Today&apos;s medicines
+          </p>
+          <h2 style={{
+            fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+            fontSize: 40,
+            fontWeight: 300,
+            color: "#2a1a08",
+            letterSpacing: "-0.3px",
+            lineHeight: 1.1,
+          }}>
             {allDone
-              ? <>{`All done,`}<br /><em style={{ color: "#c87840" }}>{userName}</em></>
-              : <>{`My`}<br /><em style={{ color: "#c87840" }}>medication</em></>}
+              ? <>All done</>
+              : <>My<br /><em style={{ color: "#c87840" }}>medication</em></>}
           </h2>
         </div>
 
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: aiMessage ? 20 : 32 }}>
+        {/* Orb + Progress Ring */}
+        <div style={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          gap: 24,
+          marginBottom: aiMessage ? 20 : 32,
+        }}>
           <Orb mood={displayOrbMood} size={100} />
+          {total > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+              <ProgressRing taken={taken} total={total} size={64} />
+              <span style={{ fontSize: 11, color: "rgba(60,40,20,0.4)", fontWeight: 300 }}>
+                {taken} of {total}
+              </span>
+            </div>
+          )}
         </div>
 
-        {/* AI reminder card */}
+        {/* AI reminder */}
         {aiMessage && (
           <div style={{
             background: "rgba(255,248,236,0.85)",
@@ -145,61 +200,98 @@ export default function Meds() {
           </div>
         )}
 
-        {/* Progress */}
-        <div style={{ marginBottom: 28, animation: "fadeUp 0.5s ease 0.1s both" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-            <span style={{ fontSize: 12, color: "rgba(60,40,20,0.4)", fontWeight: 300 }}>Progress</span>
-            <span style={{ fontSize: 12, color: "#c87840", fontWeight: 500 }}>{taken} of {all}</span>
+        {/* Progress bar */}
+        {total > 0 && (
+          <div style={{ marginBottom: 28, animation: "fadeUp 0.5s ease 0.1s both" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontSize: 12, color: "rgba(60,40,20,0.4)", fontWeight: 300 }}>Progress</span>
+              <span style={{ fontSize: 12, color: "#c87840", fontWeight: 500 }}>{taken} of {total}</span>
+            </div>
+            <div style={{ height: 3, background: "rgba(200,160,100,0.12)", borderRadius: 2, overflow: "hidden" }}>
+              <div style={{
+                height: "100%",
+                width: `${total === 0 ? 0 : (taken / total) * 100}%`,
+                background: allDone ? "#a8c8a0" : "linear-gradient(90deg, #f5c084, #c87840)",
+                borderRadius: 2,
+                transition: "width 0.5s ease, background 0.4s ease",
+              }} />
+            </div>
           </div>
-          <div style={{ height: 3, background: "rgba(200,160,100,0.12)", borderRadius: 2, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${(taken / all) * 100}%`, background: "linear-gradient(90deg, #f5c084, #c87840)", borderRadius: 2, transition: "width 0.5s ease" }} />
+        )}
+
+        {/* Loading state */}
+        {loading && (
+          <div style={{ textAlign: "center", padding: "40px 0" }}>
+            <p style={{ fontSize: 14, color: "rgba(60,40,20,0.4)", fontWeight: 300 }}>Loading...</p>
           </div>
-        </div>
+        )}
+
+        {/* Error state */}
+        {!loading && loadError && (
+          <div style={{ textAlign: "center", padding: "32px 0", animation: "fadeUp 0.4s ease both" }}>
+            <p style={{
+              fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+              fontSize: 20,
+              fontWeight: 300,
+              color: "rgba(60,40,20,0.5)",
+              fontStyle: "italic",
+            }}>
+              Something went wrong.
+            </p>
+            <p style={{ fontSize: 13, color: "rgba(60,40,20,0.35)", marginTop: 6, fontWeight: 300 }}>
+              Check your connection and refresh the page.
+            </p>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!loading && total === 0 && (
+          <div style={{ textAlign: "center", padding: "32px 0", animation: "fadeUp 0.4s ease both" }}>
+            <p style={{
+              fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+              fontSize: 20,
+              fontWeight: 300,
+              color: "rgba(60,40,20,0.5)",
+              fontStyle: "italic",
+            }}>
+              No medications added yet.
+            </p>
+            <p style={{ fontSize: 13, color: "rgba(60,40,20,0.35)", marginTop: 6, fontWeight: 300 }}>
+              Visit Settings to add your medications.
+            </p>
+          </div>
+        )}
 
         {/* Med list */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 2, animation: "fadeUp 0.5s ease 0.15s both" }}>
-          {meds.map((med, i) => (
-            <div key={med.id} style={{
-              display: "flex", alignItems: "center",
-              padding: "18px 0",
-              borderBottom: "1px solid rgba(200,160,100,0.08)",
-              opacity: med.taken ? 0.45 : 1,
-              transition: "opacity 0.3s",
-              animation: `fadeUp 0.4s ease ${0.15 + i * 0.06}s both`,
-            }}>
-              <div style={{ flex: 1 }}>
-                <div style={{
-                  fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
-                  fontSize: 22, fontWeight: 400, color: "#2a1a08", marginBottom: 3,
-                  textDecoration: med.taken ? "line-through" : "none",
-                }}>{med.name}</div>
-                <div style={{ fontSize: 12, color: "rgba(60,40,20,0.4)", fontWeight: 300 }}>{med.dose} · {med.time}</div>
-              </div>
-              <button onClick={() => toggle(med.id)} style={{
-                width: 40, height: 40, borderRadius: "50%",
-                background: med.taken ? "#a8c8a0" : "transparent",
-                border: `1.5px solid ${med.taken ? "#a8c8a0" : "rgba(200,160,100,0.3)"}`,
-                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
-                transition: "all 0.25s",
-                animation: flash === med.id ? "checkmark 0.4s ease both" : "none",
-                flexShrink: 0,
-              }}>
-                {med.taken && (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          ))}
-        </div>
+        {!loading && total > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", animation: "fadeUp 0.5s ease 0.15s both" }}>
+            {meds.map((med, i) => (
+              <MedCard
+                key={med.id}
+                id={med.id}
+                name={med.name}
+                dosage={med.dosage}
+                schedule={med.schedule}
+                taken_today={med.taken_today}
+                onToggle={handleToggle}
+                animationDelay={0.15 + i * 0.06}
+              />
+            ))}
+          </div>
+        )}
 
+        {/* All done message */}
         {allDone && (
           <div style={{ marginTop: 24, textAlign: "center", animation: "slideUp 0.5s ease both" }}>
-            <p style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 22, fontWeight: 300, color: "#2a1a08", fontStyle: "italic" }}>
-              Well done{userName !== "there" ? `, ${userName}` : ""}.
+            <p style={{
+              fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+              fontSize: 22,
+              fontWeight: 300,
+              color: "#2a1a08",
+              fontStyle: "italic",
+            }}>
+              Well done. All medicines taken today.
             </p>
-            <p style={{ fontSize: 13, color: "rgba(60,40,20,0.4)", marginTop: 4, fontWeight: 300 }}>All medicines taken today.</p>
           </div>
         )}
       </div>

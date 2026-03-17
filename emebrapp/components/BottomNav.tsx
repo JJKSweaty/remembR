@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 const tabs = [
   { href: "/", label: "Home", icon: Home },
   { href: "/find", label: "Find", icon: Search },
-  { href: "/medication", label: "Meds", icon: Pill },
-  { href: "/day", label: "My Day", icon: CalendarDays },
+  { href: "/meds", label: "Meds", icon: Pill },
+  { href: "/wellness", label: "Wellness", icon: CalendarDays },
 ];
 
 export default function BottomNav() {

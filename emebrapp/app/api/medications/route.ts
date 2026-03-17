@@ -3,6 +3,26 @@ import { supabase } from "@/lib/supabase";
 
 export async function GET() {
   try {
+    // Midnight reset — wrapped in its own try/catch so a schema mismatch
+    // (e.g. columns not yet migrated) never prevents medications from loading
+    try {
+      const today = new Date().toISOString().split("T")[0]; // "YYYY-MM-DD"
+      const { data: stale } = await supabase
+        .from("medications")
+        .select("id")
+        .or(`last_reset_date.is.null,last_reset_date.lt.${today}`)
+        .limit(1);
+
+      if (stale && stale.length > 0) {
+        await supabase
+          .from("medications")
+          .update({ taken_today: false, taken_at: null, last_reset_date: today })
+          .not("id", "is", null);
+      }
+    } catch (resetErr) {
+      console.warn("Midnight reset skipped (columns may not exist yet):", resetErr);
+    }
+
     const { data: medications, error } = await supabase
       .from("medications")
       .select("*")
@@ -24,13 +44,22 @@ export async function PATCH(req: Request) {
   try {
     const { id, taken_today } = await req.json();
 
-    const { error } = await supabase
+    // Try updating with taken_at first; fall back without it if column missing
+    let updateError = (await supabase
       .from("medications")
-      .update({ taken_today })
-      .eq("id", id);
+      .update({ taken_today, taken_at: taken_today ? new Date().toISOString() : null })
+      .eq("id", id)).error;
 
-    if (error) {
-      console.error("Error updating medication:", error);
+    if (updateError?.message?.includes("taken_at")) {
+      const fallback = await supabase
+        .from("medications")
+        .update({ taken_today })
+        .eq("id", id);
+      updateError = fallback.error;
+    }
+
+    if (updateError) {
+      console.error("Error updating medication:", updateError);
       return NextResponse.json({ error: "Failed to update" }, { status: 500 });
     }
 

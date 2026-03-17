@@ -1,8 +1,13 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import type { ToastAction } from "@/lib/voice";
 
-interface ToastItem { id: number; message: string; }
+interface ToastItem {
+  id: number;
+  message: string;
+  action?: ToastAction;
+}
 
 let toastCounter = 0;
 
@@ -12,9 +17,9 @@ export default function Toast() {
 
   useEffect(() => {
     const handler = (e: Event) => {
-      const message = (e as CustomEvent<{ message: string }>).detail.message;
+      const { message, action } = (e as CustomEvent<{ message: string; action?: ToastAction }>).detail;
       const id = ++toastCounter;
-      setToasts(prev => [...prev, { id, message }]);
+      setToasts(prev => [...prev, { id, message, action }]);
 
       const timer = setTimeout(() => {
         setToasts(prev => prev.filter(t => t.id !== id));
@@ -29,6 +34,26 @@ export default function Toast() {
       timersRef.current.forEach(t => clearTimeout(t));
     };
   }, []);
+
+  const dismiss = (id: number) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+    const timer = timersRef.current.get(id);
+    if (timer) { clearTimeout(timer); timersRef.current.delete(id); }
+  };
+
+  const handleMarkTaken = async (toast: ToastItem) => {
+    if (!toast.action?.medId) return;
+    dismiss(toast.id);
+    try {
+      await fetch("/api/medications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: toast.action.medId, taken_today: true }),
+      });
+    } catch {
+      // Silently ignore — user dismissed the toast regardless
+    }
+  };
 
   if (toasts.length === 0) return null;
 
@@ -48,31 +73,58 @@ export default function Toast() {
       gap: 8,
     }}>
       {toasts.map(t => (
-        <div key={t.id} style={{
-          background: "rgba(254,248,236,0.97)",
-          border: "1px solid rgba(200,160,100,0.25)",
-          borderRadius: 16,
-          padding: "12px 18px",
-          boxShadow: "0 4px 24px rgba(120,80,40,0.12)",
-          animation: "slideDown 0.3s ease both",
-          display: "flex",
-          alignItems: "flex-start",
-          gap: 10,
-        }}>
+        <div
+          key={t.id}
+          style={{
+            pointerEvents: "auto",
+            background: "rgba(254,248,236,0.97)",
+            border: "1px solid rgba(200,160,100,0.25)",
+            borderRadius: 16,
+            padding: "12px 18px",
+            boxShadow: "0 4px 24px rgba(120,80,40,0.12)",
+            animation: "slideDown 0.3s ease both",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+          }}
+        >
           <div style={{
             width: 6, height: 6, borderRadius: "50%",
             background: "#c87840", flexShrink: 0, marginTop: 6,
           }} />
-          <p style={{
-            fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
-            fontSize: 16,
-            fontWeight: 300,
-            color: "#c87840",
-            lineHeight: 1.5,
-            fontStyle: "italic",
-          }}>
-            {t.message}
-          </p>
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{
+              fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+              fontSize: 16,
+              fontWeight: 300,
+              color: "#c87840",
+              lineHeight: 1.5,
+              fontStyle: "italic",
+            }}>
+              {t.message}
+            </p>
+
+            {t.action?.type === "mark_taken" && (
+              <button
+                onClick={() => handleMarkTaken(t)}
+                style={{
+                  marginTop: 8,
+                  background: "linear-gradient(135deg, #f5c084, #c87840)",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 20,
+                  padding: "7px 16px",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  cursor: "pointer",
+                  fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+                }}
+              >
+                {t.action.label}
+              </button>
+            )}
+          </div>
         </div>
       ))}
     </div>

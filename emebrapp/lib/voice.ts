@@ -11,10 +11,16 @@ export const unlockAudio = () => {
   } catch { /* ignore */ }
 };
 
+export interface ToastAction {
+  label: string;
+  type: "mark_taken";
+  medId: string;
+}
+
 /** Show an Ember toast notification without speaking. */
-export const showToast = (message: string) => {
+export const showToast = (message: string, action?: ToastAction) => {
   if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent("ember-toast", { detail: { message } }));
+  window.dispatchEvent(new CustomEvent("ember-toast", { detail: { message, action } }));
 };
 
 /** Speak text aloud (en-US female voice) and show a toast. Only speaks after audio has been unlocked. */
