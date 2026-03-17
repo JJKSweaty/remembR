@@ -2,10 +2,10 @@
 Hailo GStreamer detection application for remembR.
 
 Builds and runs the GStreamer detection pipeline using hailo-apps-infra,
-following the pattern from hailo-rpi5-examples/basic_pipelines/detection.py.
+following the pattern from hailo-rpi5-examples/basic_pipelines/detection_simple.py.
 
 The detection pipeline structure is:
-  SOURCE -> INFERENCE_WRAPPER(INFERENCE) -> TRACKER -> identity_callback -> DISPLAY
+  SOURCE -> INFERENCE -> identity_callback -> DISPLAY
 
 The identity_callback element is where our pad probe (app_callback) is attached.
 This is handled automatically by the GStreamerDetectionApp.run() method.
@@ -17,6 +17,7 @@ import sys
 import queue
 import threading
 from pathlib import Path
+from typing import Any
 
 from src.utils.logging_utils import get_logger
 
@@ -107,12 +108,20 @@ class HailoDetectionApp:
         frame_holder: dict,
         camera_device: str = "/dev/video0",
         use_frame: bool = True,
+        frame_rate: int = 30,
+        frame_width: int = 640,
+        frame_height: int = 480,
+        pixel_format: str = "MJPG",
         arch: str = "auto",
     ):
         self._detection_queue = detection_queue
         self._frame_holder = frame_holder
         self._camera_device = camera_device
         self._use_frame = use_frame
+        self._frame_rate = frame_rate
+        self._frame_width = frame_width
+        self._frame_height = frame_height
+        self._pixel_format = pixel_format.upper()
         self._arch = arch
         self._thread: threading.Thread | None = None
         self._running = False
@@ -150,15 +159,138 @@ class HailoDetectionApp:
         )
 
         self._log.info("Building Hailo detection pipeline...")
-        self._log.info("Camera device: %s", self._camera_device)
+        self._log.info(
+            "Camera device: %s (target %dx%d@%dfps, %s)",
+            self._camera_device,
+            self._frame_width,
+            self._frame_height,
+            self._frame_rate,
+            self._pixel_format,
+        )
 
         try:
+            from hailo_apps.hailo_app_python.core.common.core import (
+                get_default_parser,
+                get_resource_path,
+            )
+            from hailo_apps.hailo_app_python.core.common.installation_utils import detect_hailo_arch
+            from hailo_apps.hailo_app_python.core.common.defines import (
+                DETECTION_APP_TITLE,
+                DETECTION_PIPELINE,
+                RESOURCES_MODELS_DIR_NAME,
+                RESOURCES_SO_DIR_NAME,
+                DETECTION_POSTPROCESS_SO_FILENAME,
+                DETECTION_POSTPROCESS_FUNCTION,
+            )
+            from hailo_apps.hailo_app_python.core.gstreamer.gstreamer_helper_pipelines import (
+                SOURCE_PIPELINE,
+                INFERENCE_PIPELINE,
+                INFERENCE_PIPELINE_WRAPPER,
+                TRACKER_PIPELINE,
+                USER_CALLBACK_PIPELINE,
+                DISPLAY_PIPELINE,
+            )
+            from hailo_apps.hailo_app_python.core.gstreamer.gstreamer_app import GStreamerApp
+            import setproctitle
+
+            class LowLatencyDetectionApp(GStreamerApp):
+                """Detection app with explicit camera mode and reduced latency defaults."""
+
+                def __init__(
+                    self,
+                    app_callback: Any,
+                    user_data: Any,
+                    camera_width: int,
+                    camera_height: int,
+                    no_webcam_compression: bool,
+                    parser: Any = None,
+                ) -> None:
+                    if parser is None:
+                        parser = get_default_parser()
+                    parser.add_argument(
+                        "--labels-json",
+                        default=None,
+                        help="Path to costume labels JSON file",
+                    )
+                    super().__init__(parser, user_data)
+
+                    self.video_width = camera_width
+                    self.video_height = camera_height
+                    self.no_webcam_compression = no_webcam_compression
+                    # Keep latency low, but not zero; zero can destabilize some camera drivers.
+                    self.pipeline_latency = 60
+
+                    self.batch_size = 2
+                    nms_score_threshold = 0.3
+                    nms_iou_threshold = 0.45
+
+                    if self.options_menu.arch is None:
+                        detected_arch = detect_hailo_arch()
+                        if detected_arch is None:
+                            raise ValueError("Could not auto-detect Hailo architecture. Please specify --arch manually.")
+                        self.arch = detected_arch
+                    else:
+                        self.arch = self.options_menu.arch
+
+                    if self.options_menu.hef_path is not None:
+                        self.hef_path = self.options_menu.hef_path
+                    else:
+                        self.hef_path = get_resource_path(DETECTION_PIPELINE, RESOURCES_MODELS_DIR_NAME)
+
+                    self.post_process_so = get_resource_path(
+                        DETECTION_PIPELINE, RESOURCES_SO_DIR_NAME, DETECTION_POSTPROCESS_SO_FILENAME
+                    )
+                    self.post_function_name = DETECTION_POSTPROCESS_FUNCTION
+                    self.labels_json = self.options_menu.labels_json
+                    self.app_callback = app_callback
+                    self.thresholds_str = (
+                        f"nms-score-threshold={nms_score_threshold} "
+                        f"nms-iou-threshold={nms_iou_threshold} "
+                        "output-format-type=HAILO_FORMAT_TYPE_FLOAT32"
+                    )
+                    setproctitle.setproctitle(DETECTION_APP_TITLE)
+                    self.create_pipeline()
+
+                def get_pipeline_string(self) -> str:
+                    source_pipeline = SOURCE_PIPELINE(
+                        video_source=self.video_source,
+                        video_width=self.video_width,
+                        video_height=self.video_height,
+                        no_webcam_compression=self.no_webcam_compression,
+                        frame_rate=self.frame_rate,
+                        sync=self.sync,
+                    )
+                    detection_pipeline = INFERENCE_PIPELINE(
+                        hef_path=self.hef_path,
+                        post_process_so=self.post_process_so,
+                        post_function_name=self.post_function_name,
+                        batch_size=self.batch_size,
+                        config_json=self.labels_json,
+                        additional_params=self.thresholds_str,
+                    )
+                    detection_pipeline_wrapper = INFERENCE_PIPELINE_WRAPPER(detection_pipeline)
+                    tracker_pipeline = TRACKER_PIPELINE(class_id=1)
+                    user_callback_pipeline = USER_CALLBACK_PIPELINE()
+                    display_pipeline = DISPLAY_PIPELINE(
+                        video_sink=self.video_sink,
+                        sync=self.sync,
+                        show_fps=self.show_fps,
+                    )
+                    return (
+                        f"{source_pipeline} ! "
+                        f"{detection_pipeline_wrapper} ! "
+                        f"{tracker_pipeline} ! "
+                        f"{user_callback_pipeline} ! "
+                        f"{display_pipeline}"
+                    )
+
             # Set up sys.argv for the hailo_apps argument parser
             # These mimic: python detection.py --input /dev/videoX --use-frame
             argv_backup = sys.argv
             sys.argv = [
                 "remembr_detection",
                 "--input", self._camera_device,
+                "--frame-rate", str(self._frame_rate),
             ]
             if self._use_frame:
                 sys.argv.append("--use-frame")
@@ -186,10 +318,19 @@ class HailoDetectionApp:
                     _original_signal(sig, handler)
             signal.signal = _noop_signal
             try:
-                self._app = GStreamerDetectionApp(app_callback, user_data)
+                self._app = LowLatencyDetectionApp(
+                    app_callback=app_callback,
+                    user_data=user_data,
+                    camera_width=self._frame_width,
+                    camera_height=self._frame_height,
+                    no_webcam_compression=(self._pixel_format in {"YUYV", "YUY2"}),
+                )
             finally:
                 signal.signal = _original_signal
+
+            self._minimize_pipeline_buffering()
             self._log.info("Hailo detection pipeline built successfully")
+
             self._app.run()
 
         except Exception as e:
@@ -198,6 +339,49 @@ class HailoDetectionApp:
             self._running = False
             sys.argv = argv_backup
             self._log.info("Hailo detection pipeline stopped")
+
+    def _minimize_pipeline_buffering(self) -> None:
+        """Shrink GStreamer queues so preview stays on the newest frames."""
+        if self._app is None or getattr(self._app, "pipeline", None) is None:
+            return
+
+        try:
+            import gi
+            gi.require_version("Gst", "1.0")
+            from gi.repository import Gst
+
+            self._app.pipeline_latency = 60
+            pipeline = self._app.pipeline
+            iterator = pipeline.iterate_elements()
+            while True:
+                result, element = iterator.next()
+                if result != Gst.IteratorResult.OK:
+                    if result == Gst.IteratorResult.DONE:
+                        break
+                    break
+                factory = element.get_factory()
+                factory_name = factory.get_name() if factory else ""
+                element_name = element.get_name() or ""
+
+                if factory_name == "queue":
+                    # Only tune source/display/callback edge queues to avoid starving
+                    # inference/tracker internals that are more sensitive to drops.
+                    if not (
+                        element_name.startswith("source_")
+                        or element_name.startswith("identity_callback")
+                        or element_name.startswith("hailo_display")
+                    ):
+                        continue
+                    try:
+                        element.set_property("max-size-buffers", 2)
+                        element.set_property("max-size-bytes", 0)
+                        element.set_property("max-size-time", 0)
+                        # 2 = downstream (drop oldest when full)
+                        element.set_property("leaky", 2)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self._log.debug("Could not tune GStreamer queue/source properties: %s", e)
 
     def _read_hailo_arch_from_env(self) -> str | None:
         """Read hailo_arch from the Hailo .env file as auto-detection fallback."""

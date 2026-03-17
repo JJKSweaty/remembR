@@ -16,3 +16,4 @@ venv/
 *.hef
 *.pt
 .DS_Store
+hailort.log

@@ -56,3 +56,8 @@ snapshot_labels:
   - "laptop"
   - "scissors"
   - "keyboard"
+
+# Display name overrides: translate COCO labels to user-friendly names
+# These are applied to all outputs (API, WebSocket, bounding boxes)
+display_names:
+  handbag: "wallet"

@@ -43,9 +43,16 @@ def draw_detections(
     """Draw bounding boxes and labels on a copy of the frame.
 
     Bounding box coordinates in DetectionRecord are normalized [0,1].
+    Text and line sizes scale with frame resolution.
     """
     annotated = frame.copy()
     h, w = annotated.shape[:2]
+
+    # Scale line thickness and font size with resolution
+    scale = max(w, h) / 720.0
+    thickness = max(2, int(2 * scale))
+    font_scale = 0.5 * scale
+    text_thickness = max(1, int(scale))
 
     for det in detections:
         color = _get_color(det.label)
@@ -55,16 +62,16 @@ def draw_detections(
         x2 = int((det.bbox_x + det.bbox_w) * w)
         y2 = int((det.bbox_y + det.bbox_h) * h)
 
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
 
         text = f"{det.label} {det.confidence:.0%}"
         if det.track_id:
             text = f"[{det.track_id}] {text}"
 
         # Background for text
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(annotated, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+        (tw, th_text), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thickness)
+        cv2.rectangle(annotated, (x1, y1 - th_text - 6), (x1 + tw + 4, y1), color, -1)
         cv2.putText(annotated, text, (x1 + 2, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), text_thickness)
 
     return annotated

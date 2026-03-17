@@ -5,16 +5,28 @@ server:
   port: 8000
 
 camera:
-  # "auto" discovers USB webcam automatically, or specify /dev/videoX
+  # "auto" discovers USB webcam automatically, or specify /dev/videoX.
   device: "auto"
-  width: 1280
-  height: 720
+  # If true, startup fails clearly when camera can't be opened.
+  required: true
+  # Low-latency baseline for USB webcams on Pi 5.
+  width: 640
+  height: 480
   frame_rate: 30
+  # "auto" tries fallback_pixel_formats in order.
+  pixel_format: "auto"
+  fallback_pixel_formats: ["MJPG", "YUYV"]
+  # Keep capture buffers tiny so newest frame wins.
+  buffer_size: 1
+  queue_size: 2
+  warmup_grabs: 2
+  # Apply requested mode via v4l2-ctl before pipeline starts.
+  apply_v4l2_controls: true
 
 hailo:
   # Path to hailo-rpi5-examples repo
   examples_path: "/home/jjk/hailo-rpi5-examples"
-  # Model to use (h8l variant for Hailo-8L on RPi5 AI HAT+)
+  # Model to use (yolov8s for Hailo-8L on RPi5 AI HAT+)
   model: "yolov8s"
   # Architecture auto-detected from device
   arch: "auto"
@@ -24,7 +36,7 @@ hailo:
   batch_size: 2
 
 detection:
-  confidence_threshold: 0.45
+  confidence_threshold: 0.6
   # Labels we care about for the missing-object use case
   allowed_labels:
     - "bottle"
@@ -44,17 +56,19 @@ detection:
     - "chair"
     - "bowl"
     - "vase"
-  # Per-label confidence overrides
+  # Per-label confidence overrides (omit to use default confidence_threshold)
   label_thresholds:
-    cell phone: 0.55
     bottle: 0.45
     cup: 0.50
     remote: 0.50
+    handbag: 0.40
+    cell phone: 0.55
   # Debounce: object must appear in min_hits/window frames to be confirmed
+  # With empty frames now tracked, this properly rejects false positives
   debounce_window: 5
   debounce_min_hits: 3
   # Min bounding box area ratio (fraction of frame area)
-  min_bbox_area_ratio: 0.015
+  min_bbox_area_ratio: 0.008
 
 memory:
   store_path: "data/memory_store.json"
@@ -93,3 +107,47 @@ logging:
   file: "data/logs/remembr.log"
   max_bytes: 10485760  # 10MB
   backup_count: 3
+
+# --- Pan/tilt PWM on Raspberry Pi (PCA9685 + ServoKit) ---
+
+pantilt:
+  # PCA9685 I2C settings
+  i2c_address: 64           # 0x40
+  channels: 16
+  pwm_frequency_hz: 50
+
+  # Hardware mapping (1-based servo numbers)
+  pan_servo: 1              # Pan = servo 1
+  tilt_servo: 2             # Tilt = servo 2
+
+  # Safe bounds copied from espRmbr/main/main.c:
+  # PAN_MIN_US=500, PAN_MAX_US=1800, TILT_MIN_US=200, TILT_MAX_US=1700
+  pan_min_us: 500
+  pan_max_us: 1800
+  tilt_min_us: 200
+  tilt_max_us: 1700
+  servo_abs_min_us: 200
+  servo_abs_max_us: 2800
+
+  # Serpentine scan tuning
+  pan_step_us: 30
+  tilt_step_us: 12
+  tilt_probe_us: 12
+  step_delay_ms: 180
+  edge_delay_ms: 260
+  detection_confidence_threshold: 0.60
+  search_timeout_s: 30.0
+  sweep_timeout_s: 30.0
+  snapshot_delay_ms: 500
+
+barcode:
+  # Set to /dev/input/eventX if auto-detect fails, or leave null for API-only mode
+  device: null
+
+care_plan:
+  path: "config/care_plan.json"
+
+lidar:
+  enabled: false
+  port: "/dev/ttyAMA0"
+  baudrate: 115200

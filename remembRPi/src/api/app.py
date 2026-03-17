@@ -32,7 +32,13 @@ from src.transport.websocket_manager import WebSocketManager
 from src.transport.message_router import MessageRouter
 from src.transport.tailscale_utils import print_connection_info
 from src.camera.usb_camera_detect import get_best_usb_camera, validate_camera
+from src.camera.camera_settings import load_camera_settings
 from src.utils.logging_utils import setup_logging, get_logger
+from src.services.pan_tilt_service import PanTiltService
+from src.services.barcode_service import BarcodeService
+from src.services.care_plan_service import CarePlanService
+from src.services.lidar_service import LidarService
+from src.services.drug_lookup_service import scan_and_lookup as drug_scan_and_lookup, drug_info_summary
 
 
 def load_config(config_path: str = "config/app_config.yaml") -> dict:
@@ -60,18 +66,47 @@ def create_app(config: dict | None = None) -> FastAPI:
     )
     log = get_logger()
 
-    # Resolve camera device
+    # Resolve camera device + low-latency capture settings
     cam_cfg = config.get("camera", {})
-    camera_device = cam_cfg.get("device", "auto")
-    if camera_device is None:
+    camera_settings = load_camera_settings(cam_cfg)
+    configured_camera_device = cam_cfg.get("device", "auto")
+    camera_device = configured_camera_device
+    if configured_camera_device is None:
         log.warning("Camera disabled via config. Pipeline will not start.")
-    elif camera_device == "auto":
+    elif configured_camera_device == "auto":
         camera_device = get_best_usb_camera()
         if camera_device is None:
-            log.warning("No USB camera found. Pipeline will not start.")
+            msg = "No USB camera found for required pipeline startup."
+            if camera_settings.required:
+                raise RuntimeError(msg)
+            log.warning("%s Running in API-only mode.", msg)
     elif not validate_camera(camera_device):
-        log.warning("Camera device %s is not valid. Pipeline will not start.", camera_device)
+        msg = f"Camera device {camera_device} is not valid."
+        if camera_settings.required:
+            raise RuntimeError(msg)
+        log.warning("%s Pipeline will not start.", msg)
         camera_device = None
+
+    if camera_device and not validate_camera(camera_device):
+        msg = f"Camera device {camera_device} is not readable."
+        if camera_settings.required:
+            raise RuntimeError(msg)
+        log.warning("%s Pipeline will not start.", msg)
+        camera_device = None
+
+    if camera_device:
+        log.info(
+            "Camera startup settings: device=%s target=%dx%d@%dfps format=%s fallback=%s "
+            "buffer=%d queue=%d",
+            camera_device,
+            camera_settings.width,
+            camera_settings.height,
+            camera_settings.frame_rate,
+            camera_settings.pixel_format,
+            ",".join(camera_settings.fallback_pixel_formats),
+            camera_settings.buffer_size,
+            camera_settings.queue_size,
+        )
 
     # Build memory components
     det_cfg = config.get("detection", {})
@@ -102,6 +137,16 @@ def create_app(config: dict | None = None) -> FastAPI:
 
     finder = MissingFinder.from_config(memory=memory, config_path="config/labels.yaml")
 
+    # Load display name overrides (e.g. handbag -> wallet)
+    display_names: dict[str, str] = {}
+    try:
+        with open("config/labels.yaml") as _f:
+            _ldata = yaml.safe_load(_f)
+        if _ldata and "display_names" in _ldata:
+            display_names = _ldata["display_names"]
+    except Exception:
+        pass
+
     ws_manager = WebSocketManager()
     msg_router = MessageRouter()
 
@@ -112,22 +157,83 @@ def create_app(config: dict | None = None) -> FastAPI:
     server_cfg = config.get("server", {})
     port = server_cfg.get("port", 8000)
 
+    # Initialize pan/tilt service (Pi-local PWM via PCA9685 + ServoKit)
+    pantilt_cfg = config.get("pantilt", {})
+    pan_tilt_service = PanTiltService(
+        i2c_address=int(pantilt_cfg.get("i2c_address", 0x40)),
+        channels=int(pantilt_cfg.get("channels", 16)),
+        pwm_frequency_hz=int(pantilt_cfg.get("pwm_frequency_hz", 50)),
+        pan_servo=int(pantilt_cfg.get("pan_servo", 1)),
+        tilt_servo=int(pantilt_cfg.get("tilt_servo", 2)),
+        pan_min_us=int(pantilt_cfg.get("pan_min_us", 500)),
+        pan_max_us=int(pantilt_cfg.get("pan_max_us", 1800)),
+        tilt_min_us=int(pantilt_cfg.get("tilt_min_us", 200)),
+        tilt_max_us=int(pantilt_cfg.get("tilt_max_us", 1700)),
+        servo_abs_min_us=int(pantilt_cfg.get("servo_abs_min_us", 200)),
+        servo_abs_max_us=int(pantilt_cfg.get("servo_abs_max_us", 2800)),
+        pan_step_us=int(pantilt_cfg.get("pan_step_us", 30)),
+        tilt_step_us=int(pantilt_cfg.get("tilt_step_us", 12)),
+        tilt_probe_us=int(pantilt_cfg.get("tilt_probe_us", 12)),
+        step_delay_ms=int(pantilt_cfg.get("step_delay_ms", 180)),
+        edge_delay_ms=int(pantilt_cfg.get("edge_delay_ms", 260)),
+        sweep_timeout_s=float(pantilt_cfg.get("sweep_timeout_s", 30.0)),
+        search_timeout_s=float(pantilt_cfg.get("search_timeout_s", 30.0)),
+        detection_confidence_threshold=float(
+            pantilt_cfg.get("detection_confidence_threshold", 0.60)
+        ),
+        snapshot_delay_ms=int(pantilt_cfg.get("snapshot_delay_ms", 500)),
+    )
+    care_plan_service = CarePlanService(
+        care_plan_path=config.get("care_plan", {}).get("path", "config/care_plan.json"),
+    )
+
+    # Barcode scanner: wire physical scans directly to care plan + WS broadcast
+    def _on_physical_barcode(barcode: str) -> None:
+        """Called by BarcodeService when the physical scanner reads a barcode.
+        Verifies against care plan and pushes result to all WebSocket clients."""
+        result = care_plan_service.verify_barcode(barcode)
+        result["type"] = "med_scan_result"
+        loop = app_state.get("event_loop")
+        if loop and ws_manager.client_count > 0:
+            asyncio.run_coroutine_threadsafe(
+                ws_manager.broadcast(result),
+                loop,
+            )
+
+    barcode_service = BarcodeService(
+        device_path=config.get("barcode", {}).get("device"),
+        on_scan=_on_physical_barcode,
+    )
+    lidar_cfg = config.get("lidar", {})
+    lidar_service = LidarService(
+        port=lidar_cfg.get("port", "/dev/ttyAMA0"),
+        baudrate=lidar_cfg.get("baudrate", 115200),
+    )
     # Store all state for access from routes and WebSocket handlers
     app_state = {
         "config": config,
         "memory": memory,
         "persistence": persistence,
         "finder": finder,
+        "display_names": display_names,
         "ws_manager": ws_manager,
         "msg_router": msg_router,
         "region_mapper": region_mapper,
         "camera_device": camera_device,
+        "camera_settings": camera_settings.as_dict(),
+        "camera_stream": {},
         "snapshot_dir": snapshot_dir,
         "hailo_runner": None,
         "tailscale_status": {},
         "start_time": time.time(),
         "port": port,
         "event_loop": None,
+        "pan_tilt_service": pan_tilt_service,
+        "barcode_service": barcode_service,
+        "care_plan_service": care_plan_service,
+        "lidar_service": lidar_service,
+        # Latest snapshot URL per label, so polling POST /find can return it
+        "latest_snapshots": {},
     }
 
     @asynccontextmanager
@@ -152,32 +258,36 @@ def create_app(config: dict | None = None) -> FastAPI:
         # Start persistence background thread
         persistence.start()
 
+        # Initialize new services (non-blocking, graceful degradation)
+        # Care plan
+        care_plan_service.load()
+
+        # Pan-tilt connection check
+        await pan_tilt_service.check_connection()
+
+        # Barcode scanner (optional hardware)
+        barcode_service.start()
+
+        # LiDAR (optional hardware)
+        if lidar_cfg.get("enabled", False):
+            lidar_service.start()
+
         # Start Hailo detection pipeline if camera is available
         if camera_device:
             try:
                 from src.hailo.hailo_runner import HailoRunner
 
-                def on_detections(records: list[DetectionRecord]):
-                    """Called by memory worker when new detections are processed.
-                    Schedules a WebSocket broadcast on the async event loop."""
-                    loop = app_state.get("event_loop")
-                    if loop and ws_manager.client_count > 0:
-                        objects = [r.to_dict() for r in records]
-                        asyncio.run_coroutine_threadsafe(
-                            ws_manager.broadcast_objects_update(objects),
-                            loop,
-                        )
-
                 runner = HailoRunner(
                     memory=memory,
                     camera_device=camera_device,
+                    camera_settings=camera_settings,
                     hailo_examples_path=hailo_cfg.get("examples_path"),
                     arch=hailo_cfg.get("arch", "auto"),
-                    on_detections=on_detections,
                 )
 
                 if runner.start():
                     app.state.hailo_runner = runner
+                    app.state.camera_stream = runner.active_camera_mode
                     log.info("Hailo detection pipeline started successfully")
                 else:
                     log.warning("Hailo pipeline failed to start. "
@@ -198,6 +308,8 @@ def create_app(config: dict | None = None) -> FastAPI:
         runner = app.state.hailo_runner
         if runner:
             runner.stop()
+        barcode_service.stop()
+        lidar_service.stop()
         persistence.stop()
         log.info("remembR stopped")
 
@@ -217,38 +329,83 @@ def create_app(config: dict | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Mount static files for snapshots
+    # Mount static files
     Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory="static"), name="static_files")
 
-    # Include HTTP routes
+    # Include HTTP routes (must be before snapshot mount so /snapshots/{id} route works)
     app.include_router(router)
 
+    # Mount snapshots directory as static files fallback for serving JPEGs
+    # The route handler in routes.py handles /snapshots/{id} with security checks;
+    # this mount serves as a direct static fallback.
+    app.mount("/snapshots", StaticFiles(directory=snapshot_dir), name="snapshots")
+
     # Register WebSocket message handlers
-    async def handle_find(websocket: WebSocket, message: dict) -> dict:
+    async def handle_find(websocket: WebSocket, message: dict) -> dict | None:
         label = message.get("label", "")
         if not label:
             return {"type": "error", "message": "Missing 'label' field for find"}
         result = finder.find(label)
+        resolved_label = finder.resolve_label(label)
 
-        # Try to include snapshot if found now
-        runner = getattr(app.state, "hailo_runner", None)
-        if result.get("found_now") and runner:
-            frame = runner.get_latest_frame()
-            if frame is not None:
-                from src.api.routes import _save_snapshot
-                # Build a mock request for URL generation
-                url = _save_snapshot(frame, label, snapshot_dir, None)
+        # If found now, send the find result immediately so the phone
+        # knows we spotted the object, then wait 500ms for the frame to
+        # stabilise and take a snapshot.
+        if result.get("found_now"):
+            # 1. Send the find result right away
+            await ws_manager.send_to(websocket, result)
+
+            # 2. Schedule the delayed snapshot
+            async def _delayed_snapshot():
+                await asyncio.sleep(0.5)
+                runner = getattr(app.state, "hailo_runner", None)
+                if not runner:
+                    return
+                frame = runner.get_latest_frame()
+                if frame is None:
+                    return
+
+                from src.api.routes import _save_snapshot, _objects_to_detection_records
+                # Draw only the requested target label on this find snapshot.
+                all_objects = memory.get_all_objects()
+                recent_objects = [
+                    o for o in all_objects
+                    if (time.time() - o.last_seen) < 5.0 and o.label == resolved_label
+                ]
+                detections = _objects_to_detection_records(recent_objects, display_names)
+
+                # Save snapshot to disk and get URL path
+                url = _save_snapshot(frame, label, snapshot_dir, None,
+                                     detections=detections, quality=65)
+
                 if url:
-                    result["snapshot_url"] = url
+                    # Store for subsequent polling via POST /find
+                    app_state["latest_snapshots"][resolved_label] = url
+
+                    await ws_manager.send_to(websocket, {
+                        "type": "find_snapshot_ready",
+                        "url": url,
+                        "label": label,
+                        "timestamp": time.time(),
+                    })
+
+            asyncio.create_task(_delayed_snapshot())
+            # Return None — we already sent the find result above
+            return None
 
         return result
 
     async def handle_get_current(websocket: WebSocket, message: dict) -> dict:
         objects = memory.get_current_objects()
+        dicts = []
+        for o in objects:
+            d = o.to_dict()
+            d["label"] = display_names.get(d["label"], d["label"])
+            dicts.append(d)
         return {
             "type": "objects_update",
-            "objects": [o.to_dict() for o in objects],
+            "objects": dicts,
             "timestamp": time.time(),
         }
 
@@ -260,9 +417,10 @@ def create_app(config: dict | None = None) -> FastAPI:
         if frame is None:
             return {"type": "error", "message": "No frame available"}
 
-        from src.api.routes import _save_snapshot
-        import uuid
-        url = _save_snapshot(frame, "manual", snapshot_dir, None)
+        from src.api.routes import _save_snapshot, _objects_to_detection_records
+        current_objects = memory.get_current_objects()
+        detections = _objects_to_detection_records(current_objects, display_names)
+        url = _save_snapshot(frame, "manual", snapshot_dir, None, detections=detections)
         if url:
             snapshot_id = Path(url).name
             return {
@@ -274,8 +432,132 @@ def create_app(config: dict | None = None) -> FastAPI:
         return {"type": "error", "message": "Failed to capture snapshot"}
 
     msg_router.register("find", handle_find)
+    msg_router.register("find_object", handle_find)  # alias
     msg_router.register("get_current_objects", handle_get_current)
     msg_router.register("capture_snapshot", handle_capture_snapshot)
+
+    # New WebSocket handlers for MVP
+
+    async def handle_get_recent_objects(websocket: WebSocket, message: dict) -> dict:
+        within = message.get("within", 300)
+        objects = memory.get_recent_objects(within_seconds=within)
+        dicts = []
+        for o in objects:
+            d = o.to_dict()
+            d["label"] = display_names.get(d["label"], d["label"])
+            dicts.append(d)
+        return {
+            "type": "recent_objects",
+            "objects": dicts,
+            "within_seconds": within,
+            "timestamp": time.time(),
+        }
+
+    async def handle_start_med_scan(websocket: WebSocket, message: dict) -> dict:
+        barcode = message.get("barcode")
+        medication_name = message.get("medication_name")
+
+        if barcode:
+            result = care_plan_service.verify_barcode(barcode)
+        elif medication_name:
+            result = care_plan_service.verify_name(medication_name)
+        else:
+            return {
+                "type": "med_scan_result",
+                "status": "uncertain",
+                "safety_notice": "Please confirm with your caregiver, pharmacist, or clinician.",
+                "message": "Please provide a barcode or medication name.",
+            }
+
+        result["type"] = "med_scan_result"
+        return result
+
+    async def handle_sweep(websocket: WebSocket, message: dict) -> dict:
+        if not pan_tilt_service.available:
+            return {"type": "error", "message": "Pan-tilt controller not connected"}
+        result = await pan_tilt_service.sweep()
+        result["type"] = "sweep_result"
+        return result
+
+    async def handle_scan(websocket: WebSocket, message: dict) -> dict:
+        """Handle a barcode scan request from the phone.
+
+        Grabs the latest camera frame, decodes any barcodes using pyzbar,
+        then looks up the barcode via openFDA / UPC databases and returns
+        the drug/product info to the phone.
+        """
+        runner = getattr(app.state, "hailo_runner", None)
+        if not runner:
+            return {"type": "scan_result", "status": "error",
+                    "message": "No active camera pipeline"}
+
+        frame = runner.get_latest_frame()
+        if frame is None:
+            return {"type": "scan_result", "status": "error",
+                    "message": "No camera frame available"}
+
+        # Decode barcodes from the camera frame
+        try:
+            from pyzbar.pyzbar import decode as pyzbar_decode
+            import cv2
+
+            # Convert to grayscale for better barcode detection
+            if len(frame.shape) == 3:
+                gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+            else:
+                gray = frame
+
+            barcodes = pyzbar_decode(gray)
+        except ImportError:
+            return {"type": "scan_result", "status": "error",
+                    "message": "pyzbar not installed on server"}
+        except Exception as e:
+            log.error("Barcode decode error: %s", e)
+            return {"type": "scan_result", "status": "error",
+                    "message": f"Barcode decode failed: {e}"}
+
+        if not barcodes:
+            return {"type": "scan_result", "status": "no_barcode",
+                    "message": "No barcode detected in camera view. "
+                               "Hold the barcode steady in front of the camera and try again."}
+
+        # Use the first barcode found
+        bc = barcodes[0]
+        barcode_data = bc.data.decode("utf-8", errors="replace")
+        barcode_type = bc.type  # e.g. EAN13, UPCA, CODE128, etc.
+
+        log.info("Barcode detected: %s (type: %s)", barcode_data, barcode_type)
+
+        # Look up in drug databases (runs network requests — done in thread)
+        loop = asyncio.get_event_loop()
+        drug = await loop.run_in_executor(None, drug_scan_and_lookup, barcode_data)
+
+        if drug:
+            return {
+                "type": "scan_result",
+                "status": "found",
+                "barcode": barcode_data,
+                "barcode_type": barcode_type,
+                "drug_info": drug,
+                "summary": drug_info_summary(drug),
+                "message": f"Found: {drug['brand_name']} ({drug['generic_name']})",
+            }
+
+        # Barcode decoded but no drug match — still return the raw barcode
+        return {
+            "type": "scan_result",
+            "status": "barcode_only",
+            "barcode": barcode_data,
+            "barcode_type": barcode_type,
+            "drug_info": None,
+            "message": f"Barcode scanned: {barcode_data} ({barcode_type}). "
+                       "No matching drug found in database.",
+        }
+
+    msg_router.register("get_recent_objects", handle_get_recent_objects)
+    msg_router.register("start_med_scan", handle_start_med_scan)
+    msg_router.register("sweep", handle_sweep)
+    msg_router.register("scan", handle_scan)
 
     # WebSocket endpoint
     @app.websocket("/ws")

@@ -16,6 +16,31 @@ echo ""
 PYTHON=$(command -v python3 || echo "python")
 echo "Python: $($PYTHON --version 2>&1)"
 
+# Choose install environment (never system-wide pip)
+HAILO_EXAMPLES="${HAILO_EXAMPLES_PATH:-$HOME/hailo-rpi5-examples}"
+HAILO_VENV="$HAILO_EXAMPLES/venv_hailo_rpi_examples"
+LOCAL_VENV="$SCRIPT_DIR/.venv"
+
+echo ""
+if [ -d "$HAILO_VENV" ]; then
+    echo "Using Hailo virtual environment: $HAILO_VENV"
+    # shellcheck disable=SC1090
+    source "$HAILO_VENV/bin/activate"
+elif [ -d "$LOCAL_VENV" ]; then
+    echo "Using local virtual environment: $LOCAL_VENV"
+    # shellcheck disable=SC1090
+    source "$LOCAL_VENV/bin/activate"
+else
+    echo "Creating local virtual environment: $LOCAL_VENV"
+    "$PYTHON" -m venv "$LOCAL_VENV"
+    # shellcheck disable=SC1090
+    source "$LOCAL_VENV/bin/activate"
+fi
+
+PYTHON_BIN="$(command -v python)"
+echo "Active venv python: $PYTHON_BIN"
+echo "Active venv version: $(python --version 2>&1)"
+
 # Create data directories
 echo ""
 echo "Creating data directories..."
@@ -24,7 +49,8 @@ mkdir -p data/snapshots data/logs static
 # Install Python dependencies
 echo ""
 echo "Installing Python dependencies..."
-$PYTHON -m pip install --user -r requirements.txt 2>&1 | tail -5
+python -m pip install --upgrade pip setuptools wheel >/dev/null
+python -m pip install -r requirements.txt
 echo "Dependencies installed."
 
 # Check for Hailo

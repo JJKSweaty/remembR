@@ -7,6 +7,7 @@ access snapshots, and check system health.
 These routes are registered in the main FastAPI app.
 """
 
+import asyncio
 import os
 import time
 import uuid
@@ -21,8 +22,10 @@ from src.api.schemas import (
     HealthResponse, ObjectsResponse, ObjectInfo, BoundingBox,
     FindRequest, FindResponse, SnapshotResponse,
     CommandRequest, CommandResponse, StatusResponse,
+    MedScanRequest, MedScanResponse, CarePlanResponse,
+    SweepResponse, PanTiltMoveRequest,
 )
-from src.memory.object_memory import ObjectRecord
+from src.memory.object_memory import ObjectRecord, DetectionRecord
 from src.utils.logging_utils import get_logger
 from src.utils.time_utils import format_age
 from src.utils.drawing_utils import draw_detections
@@ -31,8 +34,36 @@ router = APIRouter()
 log = get_logger()
 
 
-def _object_to_info(obj: ObjectRecord) -> ObjectInfo:
+def _objects_to_detection_records(
+    objects: list[ObjectRecord],
+    display_names: dict[str, str] | None = None,
+) -> list[DetectionRecord]:
+    """Convert visible ObjectRecords to DetectionRecords for bounding box drawing."""
+    dn = display_names or {}
+    records = []
+    for obj in objects:
+        bbox = obj.latest_bbox
+        if not bbox:
+            continue
+        records.append(DetectionRecord(
+            label=dn.get(obj.label, obj.label),
+            confidence=obj.latest_confidence,
+            bbox_x=bbox.get("x", 0),
+            bbox_y=bbox.get("y", 0),
+            bbox_w=bbox.get("w", 0),
+            bbox_h=bbox.get("h", 0),
+            track_id=obj.latest_track_id,
+            timestamp=obj.last_seen,
+        ))
+    return records
+
+
+def _object_to_info(
+    obj: ObjectRecord,
+    display_names: dict[str, str] | None = None,
+) -> ObjectInfo:
     """Convert an ObjectRecord to an API ObjectInfo response."""
+    dn = display_names or {}
     bbox = None
     if obj.latest_bbox:
         bbox = BoundingBox(
@@ -42,7 +73,7 @@ def _object_to_info(obj: ObjectRecord) -> ObjectInfo:
             h=obj.latest_bbox.get("h", 0),
         )
     return ObjectInfo(
-        label=obj.label,
+        label=dn.get(obj.label, obj.label),
         confidence=round(obj.latest_confidence, 3),
         region=obj.latest_region,
         visible_now=obj.visible_now,
@@ -85,9 +116,10 @@ async def health(request: Request) -> HealthResponse:
 async def get_current_objects(request: Request) -> ObjectsResponse:
     """Get objects currently visible in the camera feed."""
     memory = request.app.state.memory
+    dn = getattr(request.app.state, "display_names", {})
     objects = memory.get_current_objects()
     return ObjectsResponse(
-        objects=[_object_to_info(o) for o in objects],
+        objects=[_object_to_info(o, dn) for o in objects],
         count=len(objects),
         timestamp=time.time(),
     )
@@ -97,9 +129,10 @@ async def get_current_objects(request: Request) -> ObjectsResponse:
 async def get_recent_objects(request: Request, within: float = 300.0) -> ObjectsResponse:
     """Get objects seen recently (default: within last 5 minutes)."""
     memory = request.app.state.memory
+    dn = getattr(request.app.state, "display_names", {})
     objects = memory.get_recent_objects(within_seconds=within)
     return ObjectsResponse(
-        objects=[_object_to_info(o) for o in objects],
+        objects=[_object_to_info(o, dn) for o in objects],
         count=len(objects),
         timestamp=time.time(),
     )
@@ -111,22 +144,202 @@ async def find_object(request: Request, body: FindRequest) -> FindResponse:
 
     The phone app sends an object name (e.g., "wallet", "phone") and the
     backend searches current and recent memory for that object class.
+    Optionally triggers a pan-tilt sweep before searching.
     """
     finder = request.app.state.finder
+    memory = request.app.state.memory
     runner = getattr(request.app.state, "hailo_runner", None)
     snapshot_dir = getattr(request.app.state, "snapshot_dir", "data/snapshots")
+    pan_tilt = getattr(request.app.state, "pan_tilt_service", None)
+    lidar = getattr(request.app.state, "lidar_service", None)
+    latest_snapshots = getattr(request.app.state, "latest_snapshots", {})
 
-    # Try to capture a snapshot if the object is currently visible
-    snapshot_url = None
+    resolved_label = finder.resolve_label(body.label)
+
+    # New active searches should not reuse stale snapshot URLs from prior runs.
+    if body.sweep:
+        latest_snapshots.pop(resolved_label, None)
+
+    # Active search: serpentine sweep + immediate stop on confirmed target detection.
+    found_during_sweep = False
+    active_search_status: str | None = None
+    if body.sweep:
+        if pan_tilt and pan_tilt.available:
+            min_conf = getattr(pan_tilt, "detection_confidence_threshold", 0.60)
+
+            def _target_detected() -> bool:
+                obj = memory.find_object(resolved_label)
+                if obj is None or not obj.visible_now:
+                    return False
+                return obj.latest_confidence >= min_conf
+
+            sweep_result = await pan_tilt.search_for_target(_target_detected)
+            active_search_status = sweep_result.get("status")
+            found_during_sweep = active_search_status == "found"
+            log.info(
+                "Active find sweep for '%s' finished with status=%s in %.2fs",
+                resolved_label,
+                active_search_status,
+                sweep_result.get("duration_seconds", 0.0),
+            )
+        else:
+            active_search_status = "unavailable"
+            log.warning(
+                "Active find sweep requested for '%s' but pan/tilt is unavailable",
+                resolved_label,
+            )
+
     result = finder.find(body.label)
 
-    if result.get("found_now") and runner:
+    # Add LiDAR distance if available
+    if lidar and lidar.available:
+        dist_info = lidar.get_distance()
+        if dist_info.get("distance_m") is not None:
+            result["distance_m"] = dist_info["distance_m"]
+            result["distance_text"] = dist_info["distance_text"]
+
+    # If the object is visible right now, wait for camera/servo settle then
+    # take one clear snapshot from the normal camera pipeline.
+    snapshot_delay_s = 0.5
+    if pan_tilt:
+        snapshot_delay_s = getattr(pan_tilt, "snapshot_delay_seconds", 0.5)
+
+    should_capture_snapshot = (
+        (bool(result.get("found_now")) or found_during_sweep)
+        and runner is not None
+        and (body.sweep or not latest_snapshots.get(resolved_label))
+    )
+
+    if should_capture_snapshot:
+        await asyncio.sleep(snapshot_delay_s)
         frame = runner.get_latest_frame()
         if frame is not None:
-            snapshot_url = _save_snapshot(frame, body.label, snapshot_dir, request)
+            dn = getattr(request.app.state, "display_names", {})
+            # Draw only the requested target label on snapshots.
+            all_objects = memory.get_all_objects()
+            recent_objects = [
+                o for o in all_objects
+                if (time.time() - o.last_seen) < 5.0 and o.label == resolved_label
+            ]
+            detections = _objects_to_detection_records(recent_objects, dn)
+            snapshot_url = _save_snapshot(frame, body.label, snapshot_dir, request,
+                                         detections=detections, quality=65)
             result["snapshot_url"] = snapshot_url
 
+            # Store for subsequent polling
+            if snapshot_url:
+                latest_snapshots[resolved_label] = snapshot_url
+
+    # Only return a previously stored snapshot for "found now" style responses.
+    # This avoids showing stale/broken images for historical "last seen" results.
+    if (
+        not result.get("snapshot_url")
+        and (bool(result.get("found_now")) or found_during_sweep)
+    ):
+        stored_url = latest_snapshots.get(resolved_label)
+        if stored_url:
+            stored_file = Path(snapshot_dir) / Path(stored_url).name
+            if stored_file.exists():
+                result["snapshot_url"] = stored_url
+            else:
+                latest_snapshots.pop(resolved_label, None)
+
+    # In sweep mode, do not attach a stale snapshot when we only have "last seen" memory.
+    if body.sweep and not (bool(result.get("found_now")) or found_during_sweep):
+        result["snapshot_url"] = None
+
+    # Make unavailable active search explicit in the response message.
+    if body.sweep and active_search_status == "unavailable":
+        base_message = str(result.get("message", "")).strip()
+        if base_message:
+            result["message"] = (
+                "Active pan/tilt search is unavailable right now. "
+                f"{base_message}"
+            )
+        else:
+            result["message"] = "Active pan/tilt search is unavailable right now."
+
     return FindResponse(**result)
+
+
+# ---- Medication verification ----
+
+@router.post("/med/scan", response_model=MedScanResponse)
+async def med_scan(request: Request, body: MedScanRequest) -> MedScanResponse:
+    """Verify a medication barcode or name against the care plan.
+
+    Accepts either a barcode string or medication name.
+    Returns match/mismatch/uncertain with a safety notice.
+
+    This endpoint NEVER diagnoses, prescribes, or tells the user to take
+    or skip medication.
+    """
+    care_plan = getattr(request.app.state, "care_plan_service", None)
+    if care_plan is None:
+        return MedScanResponse(
+            status="uncertain",
+            safety_notice="Please confirm with your caregiver, pharmacist, or clinician.",
+            message="Medication verification service is not available.",
+        )
+
+    if body.barcode:
+        result = care_plan.verify_barcode(body.barcode)
+    elif body.medication_name:
+        result = care_plan.verify_name(body.medication_name)
+    else:
+        return MedScanResponse(
+            status="uncertain",
+            safety_notice="Please confirm with your caregiver, pharmacist, or clinician.",
+            message="Please provide a barcode or medication name to verify.",
+        )
+
+    return MedScanResponse(**result)
+
+
+@router.get("/med/plan", response_model=CarePlanResponse)
+async def get_care_plan(request: Request) -> CarePlanResponse:
+    """Get the current care plan summary (medication list)."""
+    care_plan = getattr(request.app.state, "care_plan_service", None)
+    if care_plan is None:
+        return CarePlanResponse(loaded=False)
+    return CarePlanResponse(**care_plan.get_plan_summary())
+
+
+# ---- Pan-tilt control ----
+
+@router.post("/pantilt/sweep", response_model=SweepResponse)
+async def sweep(request: Request) -> SweepResponse:
+    """Trigger a full pan-tilt room sweep."""
+    pan_tilt = getattr(request.app.state, "pan_tilt_service", None)
+    if pan_tilt is None or not pan_tilt.available:
+        return SweepResponse(status="unavailable", message="Pan-tilt controller not connected")
+
+    result = await pan_tilt.sweep()
+
+    return SweepResponse(**result)
+
+
+@router.post("/pantilt/center")
+async def pantilt_center(request: Request):
+    """Center the pan-tilt servos."""
+    pan_tilt = getattr(request.app.state, "pan_tilt_service", None)
+    if pan_tilt is None or not pan_tilt.available:
+        return {"status": "unavailable", "message": "Pan-tilt controller not connected"}
+    return await pan_tilt.center()
+
+
+@router.post("/pantilt/move")
+async def pantilt_move(request: Request, body: PanTiltMoveRequest):
+    """Move pan and/or tilt to specific positions (microseconds)."""
+    pan_tilt = getattr(request.app.state, "pan_tilt_service", None)
+    if pan_tilt is None or not pan_tilt.available:
+        return {"status": "unavailable", "message": "Pan-tilt controller not connected"}
+    results = {}
+    if body.pan_us is not None:
+        results["pan"] = await pan_tilt.set_pan(body.pan_us)
+    if body.tilt_us is not None:
+        results["tilt"] = await pan_tilt.set_tilt(body.tilt_us)
+    return {"status": "ok", "results": results}
 
 
 @router.get("/snapshots/{snapshot_id}")
@@ -177,6 +390,203 @@ async def command(request: Request, body: CommandRequest) -> CommandResponse:
         )
 
 
+# ---- Barcode scanning (camera-based, with full med verification) ----
+
+@router.post("/scan/camera")
+async def scan_camera(request: Request):
+    """Scan for barcodes using the camera frame, with full med pipeline.
+
+    Grabs the latest frame from the Hailo pipeline, decodes barcodes
+    (UPC_A, EAN13, CODE128, etc.) using pyzbar, then runs the full
+    drug lookup (openFDA + UPCitemdb) and care plan verification.
+
+    Test from CLI:
+        curl -X POST http://localhost:8000/scan/camera
+    """
+    runner = getattr(request.app.state, "hailo_runner", None)
+    if not runner:
+        return {"status": "error", "message": "No active camera pipeline"}
+
+    frame = runner.get_latest_frame()
+    if frame is None:
+        return {"status": "error", "message": "No camera frame available"}
+
+    try:
+        from pyzbar.pyzbar import decode as pyzbar_decode
+
+        if len(frame.shape) == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = frame
+
+        barcodes = pyzbar_decode(gray)
+    except ImportError:
+        return {"status": "error", "message": "pyzbar not installed"}
+    except Exception as e:
+        return {"status": "error", "message": f"Barcode decode failed: {e}"}
+
+    if not barcodes:
+        return {
+            "status": "no_barcode",
+            "message": "No barcode detected in camera view.",
+        }
+
+    # Use the first barcode found
+    bc = barcodes[0]
+    barcode_data = bc.data.decode("utf-8", errors="replace")
+    barcode_type = bc.type
+
+    result = {
+        "status": "found",
+        "barcode": barcode_data,
+        "barcode_type": barcode_type,
+    }
+
+    # Drug lookup (openFDA / UPCitemdb)
+    try:
+        from src.services.drug_lookup_service import scan_and_lookup, drug_info_summary
+        import asyncio
+        loop = asyncio.get_event_loop()
+        drug = await loop.run_in_executor(None, scan_and_lookup, barcode_data)
+        if drug:
+            result["drug_info"] = drug
+            result["drug_summary"] = drug_info_summary(drug)
+        else:
+            result["drug_info"] = None
+            result["drug_summary"] = "No drug match found in database."
+    except Exception as e:
+        result["drug_info"] = None
+        result["drug_summary"] = f"Drug lookup failed: {e}"
+
+    # Care plan verification
+    care_plan = getattr(request.app.state, "care_plan_service", None)
+    if care_plan:
+        result["care_plan_check"] = care_plan.verify_barcode(barcode_data)
+    else:
+        result["care_plan_check"] = {"status": "unavailable",
+                                     "message": "No care plan loaded"}
+
+    # Also list all barcodes found (in case multiple)
+    result["all_barcodes"] = [
+        {"data": b.data.decode("utf-8", errors="replace"), "type": b.type}
+        for b in barcodes
+    ]
+
+    return result
+
+
+@router.get("/scan/debug")
+async def scan_debug(request: Request):
+    """Capture a frame, attempt barcode decode + med lookup, save snapshot.
+
+    Returns the barcode results, drug info, care plan check, plus a
+    snapshot URL so you can see what the camera captured. Test from CLI:
+        curl http://localhost:8000/scan/debug
+    Then view the snapshot at the returned snapshot_url.
+    """
+    runner = getattr(request.app.state, "hailo_runner", None)
+    if not runner:
+        return {"status": "error", "message": "No active camera pipeline"}
+
+    frame = runner.get_latest_frame()
+    if frame is None:
+        return {"status": "error", "message": "No camera frame available"}
+
+    snapshot_dir = getattr(request.app.state, "snapshot_dir", "data/snapshots")
+    barcode_data = None
+    barcode_type = None
+
+    try:
+        from pyzbar.pyzbar import decode as pyzbar_decode
+
+        if len(frame.shape) == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = frame
+
+        barcodes = pyzbar_decode(gray)
+
+        # Draw barcode bounding boxes on the frame for the snapshot
+        annotated = frame.copy()
+        for bc in barcodes:
+            r = bc.rect
+            cv2.rectangle(annotated, (r.left, r.top),
+                         (r.left + r.width, r.top + r.height),
+                         (0, 255, 0), 3)
+            bc_text = bc.data.decode("utf-8", errors="replace")
+            cv2.putText(annotated, f"{bc.type}: {bc_text}",
+                       (r.left, r.top - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        if barcodes:
+            barcode_data = barcodes[0].data.decode("utf-8", errors="replace")
+            barcode_type = barcodes[0].type
+
+        snapshot_url = _save_snapshot(annotated, "barcode_debug", snapshot_dir,
+                                     request, quality=60)
+
+    except ImportError:
+        snapshot_url = _save_snapshot(frame, "barcode_debug", snapshot_dir,
+                                     request, quality=60)
+        return {
+            "status": "error",
+            "message": "pyzbar not installed",
+            "snapshot_url": snapshot_url,
+        }
+    except Exception as e:
+        snapshot_url = _save_snapshot(frame, "barcode_debug", snapshot_dir,
+                                     request, quality=60)
+        return {
+            "status": "error",
+            "message": f"Barcode decode failed: {e}",
+            "snapshot_url": snapshot_url,
+        }
+
+    if not barcode_data:
+        return {
+            "status": "no_barcode",
+            "snapshot_url": snapshot_url,
+            "message": "No barcode detected. Check snapshot to see camera view.",
+        }
+
+    # Full med pipeline: drug lookup + care plan
+    result = {
+        "status": "found",
+        "barcode": barcode_data,
+        "barcode_type": barcode_type,
+        "snapshot_url": snapshot_url,
+    }
+
+    try:
+        from src.services.drug_lookup_service import scan_and_lookup, drug_info_summary
+        import asyncio
+        loop = asyncio.get_event_loop()
+        drug = await loop.run_in_executor(None, scan_and_lookup, barcode_data)
+        if drug:
+            result["drug_info"] = drug
+            result["drug_summary"] = drug_info_summary(drug)
+        else:
+            result["drug_info"] = None
+            result["drug_summary"] = "No drug match found in database."
+    except Exception as e:
+        result["drug_info"] = None
+        result["drug_summary"] = f"Drug lookup failed: {e}"
+
+    care_plan = getattr(request.app.state, "care_plan_service", None)
+    if care_plan:
+        result["care_plan_check"] = care_plan.verify_barcode(barcode_data)
+    else:
+        result["care_plan_check"] = {"status": "unavailable",
+                                     "message": "No care plan loaded"}
+
+    result["message"] = (
+        f"Barcode: {barcode_data} ({barcode_type}). "
+        f"Drug: {result['drug_summary']}"
+    )
+
+    return result
+
+
 @router.get("/status", response_model=StatusResponse)
 async def status(request: Request) -> StatusResponse:
     """Detailed system status for network debugging."""
@@ -185,6 +595,12 @@ async def status(request: Request) -> StatusResponse:
     runner = getattr(app_state, "hailo_runner", None)
     memory = getattr(app_state, "memory", None)
     start_time = getattr(app_state, "start_time", time.time())
+    pan_tilt = getattr(app_state, "pan_tilt_service", None)
+    barcode = getattr(app_state, "barcode_service", None)
+    care_plan = getattr(app_state, "care_plan_service", None)
+    lidar = getattr(app_state, "lidar_service", None)
+    camera_settings = getattr(app_state, "camera_settings", {})
+    camera_stream = getattr(app_state, "camera_stream", {})
 
     import socket
     return StatusResponse(
@@ -197,9 +613,11 @@ async def status(request: Request) -> StatusResponse:
         camera={
             "device": getattr(app_state, "camera_device", "unknown"),
             "pipeline_running": runner.is_running if runner else False,
+            "settings": camera_settings,
+            "stream": camera_stream,
         },
         hailo={
-            "available": True,  # If we got this far
+            "available": True,
             "pipeline_running": runner.is_running if runner else False,
         },
         memory={
@@ -207,18 +625,33 @@ async def status(request: Request) -> StatusResponse:
             "currently_visible": len(memory.get_current_objects()) if memory else 0,
             "recently_seen": len(memory.get_recent_objects()) if memory else 0,
         },
+        pan_tilt=pan_tilt.to_status_dict() if pan_tilt else {},
+        barcode=barcode.to_status_dict() if barcode else {},
+        care_plan=care_plan.to_status_dict() if care_plan else {},
+        lidar=lidar.to_status_dict() if lidar else {},
+        companion={},
     )
 
 
 def _save_snapshot(
     frame, label: str, snapshot_dir: str, request: Request,
+    detections=None, quality: int = 85,
 ) -> str | None:
-    """Save an annotated snapshot and return its URL."""
+    """Save a snapshot and return its URL.
+
+    If detections are provided, bounding boxes and labels are drawn on the image.
+    quality: JPEG quality 0-100 (higher = better quality, larger file).
+    """
     try:
         Path(snapshot_dir).mkdir(parents=True, exist_ok=True)
         timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        snapshot_id = f"{label}_{timestamp_str}_{uuid.uuid4().hex[:6]}.jpg"
+        safe_label = label.replace(" ", "_")
+        snapshot_id = f"{safe_label}_{timestamp_str}_{uuid.uuid4().hex[:6]}.jpg"
         file_path = Path(snapshot_dir) / snapshot_id
+
+        # Draw bounding boxes if detections are available
+        if detections:
+            frame = draw_detections(frame, detections)
 
         # Convert RGB to BGR for OpenCV if needed
         if frame.shape[2] == 3:
@@ -226,8 +659,8 @@ def _save_snapshot(
         else:
             bgr = frame
 
-        cv2.imwrite(str(file_path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        log.info("Saved snapshot: %s", snapshot_id)
+        cv2.imwrite(str(file_path), bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        log.info("Saved snapshot: %s (quality=%d)", snapshot_id, quality)
 
         return f"/snapshots/{snapshot_id}"
     except Exception as e:

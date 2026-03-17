@@ -47,6 +47,7 @@ class ObjectsResponse(BaseModel):
 
 class FindRequest(BaseModel):
     label: str = Field(description="Object to search for, e.g. 'wallet', 'phone', 'keys'")
+    sweep: bool = Field(default=False, description="If true, trigger pan-tilt sweep before searching")
 
 
 class FindResponse(BaseModel):
@@ -61,6 +62,8 @@ class FindResponse(BaseModel):
     confidence: float | None = None
     track_id: int | None = None
     snapshot_url: str | None = None
+    distance_m: float | None = None
+    distance_text: str | None = None
     message: str
 
 
@@ -70,6 +73,46 @@ class SnapshotResponse(BaseModel):
     label: str | None = None
     timestamp: float
 
+
+# ---- Medication verification ----
+
+class MedScanRequest(BaseModel):
+    barcode: str | None = Field(default=None, description="Scanned barcode string")
+    medication_name: str | None = Field(default=None, description="Medication name for name-based lookup")
+
+
+class MedScanResponse(BaseModel):
+    type: str = "med_scan_result"
+    status: str = Field(description="match | mismatch | uncertain")
+    barcode: str | None = None
+    medication_name: str | None = None
+    dosage: str | None = None
+    plan_slot: str | None = None
+    confidence: float = 0.0
+    safety_notice: str
+    message: str
+
+
+class CarePlanResponse(BaseModel):
+    loaded: bool
+    medication_count: int = 0
+    medications: list[dict] = Field(default_factory=list)
+
+
+# ---- Pan-tilt ----
+
+class SweepResponse(BaseModel):
+    status: str
+    message: str
+    duration_seconds: float | None = None
+
+
+class PanTiltMoveRequest(BaseModel):
+    pan_us: int | None = Field(default=None, ge=500, le=1800, description="Pan position in microseconds")
+    tilt_us: int | None = Field(default=None, ge=200, le=1700, description="Tilt position in microseconds")
+
+
+# ---- Generic ----
 
 class CommandRequest(BaseModel):
     command: str
@@ -88,3 +131,8 @@ class StatusResponse(BaseModel):
     camera: dict
     hailo: dict
     memory: dict
+    pan_tilt: dict = Field(default_factory=dict)
+    barcode: dict = Field(default_factory=dict)
+    care_plan: dict = Field(default_factory=dict)
+    lidar: dict = Field(default_factory=dict)
+    companion: dict = Field(default_factory=dict)
