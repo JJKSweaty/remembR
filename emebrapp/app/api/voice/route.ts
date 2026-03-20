@@ -9,18 +9,41 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No transcript provided" }, { status: 400 });
     }
 
-    // Fetch recent conversation history from Supabase
-    const logs = await Promise.resolve(
-      supabase
-        .from("voice_history")
-        .select("transcript, response")
-        .order("created_at", { ascending: false })
-        .limit(5)
-    ).then(r => r.data).catch(() => null);
+    // Fetch patient context and conversation history in parallel
+    const [{ data: profile }, { data: medications }, { data: logs }] = await Promise.all([
+      supabase.from("patient_profile").select("*").limit(1).single(),
+      supabase.from("medications").select("name, dosage, schedule, taken_today").order("schedule", { ascending: true }),
+      supabase.from("voice_history").select("transcript, response").order("created_at", { ascending: false }).limit(5),
+    ]);
 
     const now = new Date();
     const timeStr = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
     const dateStr = now.toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+
+    let profileSection = "The patient's profile has not been set up yet.";
+    if (profile) {
+      const parts = [`Name: ${profile.name || "Unknown"}`];
+      if (profile.date_of_birth) {
+        const age = Math.floor((now.getTime() - new Date(profile.date_of_birth).getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+        parts.push(`Age: ${age}`);
+      }
+      if (profile.address) parts.push(`Address: ${profile.address}`);
+      if (profile.emergency_contact_name) {
+        const ec = profile.emergency_contact_phone
+          ? `${profile.emergency_contact_name} — ${profile.emergency_contact_phone}`
+          : profile.emergency_contact_name;
+        parts.push(`Emergency contact: ${ec}`);
+      }
+      if (profile.notes) parts.push(`Notes: ${profile.notes}`);
+      profileSection = `The patient's profile:\n${parts.join("\n")}`;
+    }
+
+    const firstName = (profile?.name as string | null)?.split(" ")[0] ?? "The patient";
+    const medsSection = medications && medications.length > 0
+      ? `${firstName}'s medication schedule:\n${medications.map(m =>
+          `- ${m.name}${m.dosage ? ` ${m.dosage}` : ""} — ${m.schedule}${m.taken_today ? " (already taken today)" : ""}`
+        ).join("\n")}`
+      : "No medications are currently on record.";
 
     const systemPrompt = `
 You are Ember, a warm and gentle AI companion for a person with dementia.
@@ -29,18 +52,9 @@ You speak like a caring friend, not a robot.
 
 Current date and time: ${dateStr}, ${timeStr}
 
-The patient's profile:
-Name: Harris Thompson
-Age: 78
-Address: 142 Maple Street, Toronto, ON M5V 2H1
-Emergency contact: Susan Thompson (daughter) — 416-555-0192
+${profileSection}
 
-Harris's medication schedule:
-- Donepezil (Aricept) 10mg — take 1 tablet every night at bedtime with water
-- Lisinopril 5mg — take 1 tablet every morning with breakfast (for blood pressure)
-- Metformin 500mg — take 1 tablet with breakfast AND 1 tablet with dinner (for diabetes)
-- Vitamin D 1000 IU — take 1 capsule every morning with breakfast
-- Aspirin 81mg — take 1 tablet every morning with breakfast (blood thinner)
+${medsSection}
 
 Recent conversation history:
 ${JSON.stringify(logs || [])}

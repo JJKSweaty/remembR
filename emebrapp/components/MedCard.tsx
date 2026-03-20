@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { motion } from "framer-motion";
 import { parseTimeToDate } from "@/lib/time";
 
 interface MedCardProps {
@@ -21,122 +21,149 @@ function getStatus(taken_today: boolean, schedule: string): Status {
   return "pending";
 }
 
+function PillIcon({ color }: { color: string }) {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+      <rect x="3" y="9" width="18" height="6" rx="3" stroke={color} strokeWidth="1.8" />
+      <line x1="12" y1="9" x2="12" y2="15" stroke={color} strokeWidth="1.8" />
+      <rect x="3" y="9" width="9" height="6" rx="3" fill={color} fillOpacity="0.15" />
+    </svg>
+  );
+}
+
 export default function MedCard({
-  id,
-  name,
-  dosage,
-  schedule,
-  taken_today,
-  onToggle,
-  animationDelay = 0,
+  id, name, dosage, schedule, taken_today, onToggle, animationDelay = 0,
 }: MedCardProps) {
-  const [flash, setFlash] = useState(false);
-  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const status = getStatus(taken_today, schedule);
-  const isTaken = status === "taken";
+  const status    = getStatus(taken_today, schedule);
+  const isTaken   = status === "taken";
   const isOverdue = status === "overdue";
 
-  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
-
-  const handleTap = () => {
-    if (!taken_today) {
-      setFlash(true);
-      flashTimer.current = setTimeout(() => setFlash(false), 600);
-    }
-    onToggle(id, !taken_today);
-  };
+  const accentColor = isTaken ? "#4CAF82" : isOverdue ? "#BA7517" : "#EF9F27";
+  const badgeBg     = isTaken ? "#4CAF82" : isOverdue ? "#BA7517" : "#FAEEDA";
+  const badgeColor  = isTaken || isOverdue ? "white" : "#8A6A2A";
+  const badgeText   = isTaken ? "Taken" : isOverdue ? "Overdue" : "Upcoming";
+  const iconColor   = isTaken ? "#4CAF82" : "#EF9F27";
 
   return (
-    <div
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: isTaken ? 0.6 : 1, y: 0 }}
+      exit={{ opacity: 0, x: 40, scale: 0.97 }}
+      transition={{ duration: 0.35, delay: animationDelay }}
       style={{
+        background: isTaken ? "rgba(76,175,130,0.05)" : "#FFFDF9",
+        borderRadius: 18,
+        border: `1px solid ${isTaken ? "rgba(76,175,130,0.2)" : "#FAE8C0"}`,
+        boxShadow: "0 4px 16px rgba(186,117,23,0.07)",
         display: "flex",
-        alignItems: "center",
-        padding: "18px 0",
-        borderBottom: "1px solid rgba(200,160,100,0.08)",
-        opacity: isTaken ? 0.45 : 1,
-        transition: "opacity 0.3s",
-        animation: `fadeUp 0.4s ease ${animationDelay}s both`,
+        alignItems: "stretch",
+        overflow: "hidden",
+        marginBottom: 10,
       }}
     >
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
-            fontSize: 22,
-            fontWeight: 400,
-            color: "#2a1a08",
-            marginBottom: 4,
-            textDecoration: isTaken ? "line-through" : "none",
-          }}
-        >
-          {name}
+      {/* Left accent bar */}
+      <div style={{ width: 4, flexShrink: 0, background: accentColor, opacity: isTaken ? 0.5 : 1 }} />
+
+      <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 14, padding: "18px 16px 18px 18px" }}>
+
+        {/* Pill icon */}
+        <div style={{
+          width: 44, height: 44, borderRadius: 13,
+          background: isTaken ? "rgba(76,175,130,0.1)" : "var(--primary-softest)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          flexShrink: 0,
+        }}>
+          <PillIcon color={iconColor} />
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 12, color: "rgba(60,40,20,0.4)", fontWeight: 300 }}>
-            {dosage} · {schedule}
-          </span>
-          {isOverdue && (
-            <span
+
+        {/* Name + dosage/schedule */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{
+            fontSize: 18, fontWeight: 700, color: "#2D1A00",
+            fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+            marginBottom: 3,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            textDecoration: isTaken ? "line-through" : "none",
+            opacity: isTaken ? 0.55 : 1,
+          }}>
+            {name}
+          </p>
+          <p style={{ fontSize: 13, color: "#8A6A2A", fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
+            {dosage ? `${dosage} · ` : ""}{schedule}
+          </p>
+        </div>
+
+        {/* Right: badge + action */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
+          {isOverdue && !isTaken ? (
+            <motion.span
+              animate={{ opacity: [1, 0.45, 1] }}
+              transition={{ duration: 1.4, repeat: Infinity }}
               style={{
-                fontSize: 10,
-                fontWeight: 600,
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color: "#c84020",
-                background: "rgba(220,100,60,0.08)",
-                padding: "2px 7px",
-                borderRadius: 20,
+                fontSize: 11, fontWeight: 700,
+                background: badgeBg, color: badgeColor,
+                padding: "5px 11px", borderRadius: 50,
+                fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+                letterSpacing: "0.02em",
               }}
             >
-              Overdue
+              {badgeText}
+            </motion.span>
+          ) : (
+            <span style={{
+              fontSize: 11, fontWeight: 700,
+              background: badgeBg, color: badgeColor,
+              padding: "5px 11px", borderRadius: 50,
+              fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+              letterSpacing: "0.02em",
+            }}>
+              {badgeText}
             </span>
+          )}
+
+          {/* Take button */}
+          {!isTaken && (
+            <motion.button
+              whileTap={{ scale: 0.93 }}
+              onClick={() => onToggle(id, true)}
+              style={{
+                background: "#EF9F27",
+                color: "white",
+                border: "none",
+                borderRadius: 50,
+                padding: "6px 14px",
+                fontSize: 12, fontWeight: 700,
+                cursor: "pointer",
+                fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+                letterSpacing: "0.02em",
+                boxShadow: "0 2px 8px rgba(186,117,23,0.3)",
+              }}
+            >
+              ✓ Take
+            </motion.button>
+          )}
+
+          {/* Undo button */}
+          {isTaken && (
+            <button
+              onClick={() => onToggle(id, false)}
+              style={{
+                background: "transparent",
+                color: "#8A6A2A",
+                border: "1px solid rgba(186,117,23,0.2)",
+                borderRadius: 50,
+                padding: "5px 10px",
+                fontSize: 11, fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+              }}
+            >
+              Undo
+            </button>
           )}
         </div>
       </div>
-
-      <button
-        onClick={handleTap}
-        aria-label={taken_today ? "Mark as not taken" : "Mark as taken"}
-        style={{
-          width: 40,
-          height: 40,
-          borderRadius: "50%",
-          background: isTaken
-            ? "#a8c8a0"
-            : isOverdue
-              ? "rgba(220,100,60,0.08)"
-              : "transparent",
-          border: `1.5px solid ${
-            isTaken
-              ? "#a8c8a0"
-              : isOverdue
-                ? "rgba(220,100,60,0.35)"
-                : "rgba(200,160,100,0.3)"
-          }`,
-          cursor: "pointer",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          transition: "all 0.25s",
-          animation: flash ? "checkmark 0.4s ease both" : "none",
-          flexShrink: 0,
-        }}
-      >
-        {isTaken && (
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="white"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        )}
-      </button>
-    </div>
+    </motion.div>
   );
 }

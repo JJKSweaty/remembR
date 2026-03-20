@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { speak, preloadVoices } from "@/lib/speech";
 
 type ListeningState = "idle" | "listening" | "processing";
@@ -187,18 +188,34 @@ export default function VoiceButton() {
             </p>
           )}
           {response && (
-            <p
-              style={{
-                fontSize: 16,
-                color: "#2a1a08",
-                fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
-                fontWeight: 400,
-                lineHeight: 1.5,
-                margin: 0,
-              }}
-            >
-              {response}
-            </p>
+            <>
+              <p
+                style={{
+                  fontSize: 16,
+                  color: "#2a1a08",
+                  fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+                  fontWeight: 400,
+                  lineHeight: 1.5,
+                  margin: 0,
+                }}
+              >
+                {response}
+              </p>
+              <Link
+                href="/chat"
+                style={{
+                  display: "block",
+                  marginTop: 10,
+                  fontSize: 12,
+                  color: "#c87840",
+                  textDecoration: "none",
+                  textAlign: "right",
+                  opacity: 0.7,
+                }}
+              >
+                See all →
+              </Link>
+            </>
           )}
         </div>
       )}
