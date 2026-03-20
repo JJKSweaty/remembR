@@ -3,21 +3,28 @@
 @import "shadcn/tailwind.css";
 
 :root {
-  /* ── Ember / Warm Golden theme ────────────────────────── */
+  /* ── Ember / Dark Golden theme ────────────────────────── */
   --white:           #FFFFFF;
-  --background:      #FFFDF9;
-  --background-soft: #FEF8EC;
-  --card:            #FFFFFF;
+  --background:      #0F0E09;
+  --surface:         #1A1808;
+  --card:            #1E1C0F;
   --primary:         #EF9F27;
+  --primary-glow:    rgba(239,159,39,0.3);
   --primary-dark:    #BA7517;
   --primary-light:   #FAC775;
-  --primary-pale:    #FAEEDA;
-  --primary-softest: #FEF8EC;
-  --text-primary:    #2D1A00;
-  --text-secondary:  #8A6A2A;
-  --text-muted:      #B8924A;
-  --card-border:     #FAE8C0;
-  --card-shadow:     0 2px 12px rgba(186,117,23,0.08);
+  --primary-pale:    rgba(239,159,39,0.12);
+  --primary-softest: rgba(239,159,39,0.08);
+  --text-primary:    #F5EDD6;
+  --text-secondary:  #8A7A52;
+  --text-muted:      #4A4232;
+  --card-border:     rgba(239,159,39,0.15);
+  --card-shadow:     0 4px 24px rgba(0,0,0,0.5);
+}
+
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+.hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+:root {
   --success:         #4CAF82;
   --warning:         #EF9F27;
 
@@ -31,13 +38,18 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
 }
 
 body {
   font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
-  background: radial-gradient(ellipse at 50% 28%, #FFFDF9 0%, #FFF8ED 100%) fixed;
+  background: #0F0E09;
   min-height: 100vh;
   min-height: 100svh;
+  color: var(--text-primary);
 }
 
 /* EmberOrb glow pulse — CSS only as specified */
@@ -125,4 +137,8 @@ body {
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-16px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes shimmer {
+  0%, 100% { opacity: 0.4; }
+  50%       { opacity: 0.8; }
 }
