@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { motion } from "framer-motion";
-import { ArrowLeft } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ArrowLeft, LogOut } from "lucide-react";
+import { supabase } from "@/lib/supabase";
 import PageWrapper from "@/components/PageWrapper";
 import { checkPiHealth } from "@/lib/pi";
 import { getUserProfile, saveUserProfile, type UserProfile } from "@/lib/memory";
@@ -70,7 +71,8 @@ export default function Settings() {
   const [profile, setProfile] = useState<UserProfile>({ name: "", address: "", medications: [], schedule: [] });
   const [client, setClient]   = useState<ClientInfo>(defaultClient);
   const [focusedField, setFocusedField] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved]             = useState(false);
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -363,6 +365,71 @@ export default function Settings() {
         >
           {saved ? "Saved ✓" : "Save All"}
         </motion.button>
+
+        {/* ── Sign Out ─────────────────────────────────────────────────── */}
+        <AnimatePresence>
+          {showSignOutConfirm ? (
+            <motion.div
+              key="confirm"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              style={{
+                marginTop: 12,
+                background: "var(--card)",
+                border: "1px solid rgba(224,112,96,0.3)",
+                borderRadius: 20,
+                padding: "18px 20px",
+                display: "flex", flexDirection: "column", gap: 12,
+              }}
+            >
+              <p style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif", textAlign: "center", margin: 0 }}>
+                Are you sure you want to sign out?
+              </p>
+              <div style={{ display: "flex", gap: 10 }}>
+                <motion.button whileTap={{ scale: 0.96 }}
+                  onClick={() => setShowSignOutConfirm(false)}
+                  style={{ flex: 1, padding: "11px", background: "transparent",
+                    border: "1px solid rgba(239,159,39,0.25)", borderRadius: 50,
+                    fontSize: 14, color: "var(--text-muted)",
+                    fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif", cursor: "pointer" }}>
+                  Cancel
+                </motion.button>
+                <motion.button whileTap={{ scale: 0.96 }}
+                  onClick={async () => { await supabase.auth.signOut(); router.push("/auth"); }}
+                  style={{ flex: 1, padding: "11px", background: "rgba(224,112,96,0.12)",
+                    border: "1px solid rgba(224,112,96,0.4)", borderRadius: 50,
+                    fontSize: 14, fontWeight: 600, color: "#E07060",
+                    fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif", cursor: "pointer" }}>
+                  Sign Out
+                </motion.button>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.button
+              key="signout-btn"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={() => setShowSignOutConfirm(true)}
+              style={{
+                marginTop: 12,
+                width: "100%", padding: "14px",
+                background: "transparent",
+                border: "1px solid rgba(224,112,96,0.3)",
+                borderRadius: 50,
+                fontSize: 14, fontWeight: 500, color: "#E07060",
+                fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
+                cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                transition: "border-color 0.2s",
+              }}
+            >
+              <LogOut size={16} color="#E07060" strokeWidth={2} />
+              Sign Out
+            </motion.button>
+          )}
+        </AnimatePresence>
 
       </div>
     </PageWrapper>
