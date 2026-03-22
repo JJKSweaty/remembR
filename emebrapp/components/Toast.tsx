@@ -72,11 +72,11 @@ export default function Toast() {
           key={t.id}
           style={{
             pointerEvents: "auto",
-            background: "rgba(254,248,236,0.97)",
-            border: "1px solid rgba(200,160,100,0.25)",
+            background: "var(--card)",
+            border: "1px solid var(--card-border)",
             borderRadius: 16,
             padding: "12px 18px",
-            boxShadow: "0 4px 24px rgba(120,80,40,0.12)",
+            boxShadow: "0 4px 24px rgba(0,0,0,0.3)",
             animation: "slideDown 0.3s ease both",
             display: "flex",
             alignItems: "flex-start",
@@ -85,7 +85,7 @@ export default function Toast() {
         >
           <div style={{
             width: 6, height: 6, borderRadius: "50%",
-            background: "#c87840", flexShrink: 0, marginTop: 6,
+            background: "#EF9F27", flexShrink: 0, marginTop: 6,
           }} />
 
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -93,7 +93,7 @@ export default function Toast() {
               fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
               fontSize: 16,
               fontWeight: 300,
-              color: "#c87840",
+              color: "#EF9F27",
               lineHeight: 1.5,
               fontStyle: "italic",
             }}>

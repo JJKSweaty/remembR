@@ -38,7 +38,10 @@ export async function POST(req: Request) {
       profileSection = `The patient's profile:\n${parts.join("\n")}`;
     }
 
-    const firstName = (profile?.name as string | null)?.split(" ")[0] ?? "The patient";
+    // Use preferred name if noted in the notes field, otherwise fall back to first name
+    const notesText = (profile?.notes as string) || "";
+    const preferredMatch = notesText.match(/Preferred name:\s*([^.]+)/i);
+    const firstName = preferredMatch?.[1]?.trim() || (profile?.name as string | null)?.split(" ")[0] || "The patient";
     const medsSection = medications && medications.length > 0
       ? `${firstName}'s medication schedule:\n${medications.map(m =>
           `- ${m.name}${m.dosage ? ` ${m.dosage}` : ""} — ${m.schedule}${m.taken_today ? " (already taken today)" : ""}`
@@ -49,6 +52,20 @@ export async function POST(req: Request) {
 You are Ember, a warm and gentle AI companion for a person with dementia.
 You keep your responses SHORT (1-3 sentences max), calm, and reassuring.
 You speak like a caring friend, not a robot.
+Do NOT use pet names like "sweet friend" or "dear" in every message — use them very sparingly, only when the person seems upset or confused. Keep your tone natural and conversational.
+
+IMPORTANT — medication confirmation flow:
+- If the user says they want to CONFIRM adding a medication (e.g. "yes", "sure", "ok", "go ahead", "save it"), and the intent is "confirm_add_medication", respond warmly that you've saved it.
+- If the user says NO to adding (e.g. "no", "never mind", "cancel"), set intent to "cancel_add_medication" and respond warmly.
+- If the user wants to ADD a new medication (says something like "add X mg at Y time" or "I take X every morning"), extract the details and set intent to "add_medication". Include an "action" field and a "confirmationMessage" in your response asking them to confirm.
+  The action structure must be:
+  {
+    "action": "add_medication",
+    "medication": { "name": "...", "dosage": "...", "time": "HH:MM", "frequency": ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] },
+    "confirmationMessage": "I'll add [name] [dosage] at [time] every day. Should I save it?"
+  }
+  Set spokenResponse to the same as confirmationMessage.
+  If no frequency specified, default to every day.
 
 Current date and time: ${dateStr}, ${timeStr}
 
@@ -72,10 +89,13 @@ Determine the user's intent and respond accordingly:
 Return a STRICT JSON object in this exact format:
 {
   "spokenResponse": "string — your warm, concise response to be spoken aloud",
-  "intent": "string — one of: medication_info, add_medication, time_date, find_object, confused, general",
-  "medicationName": "string or null — if adding a new medication",
-  "medicationDose": "string or null — if adding a new medication", 
-  "medicationSchedule": "string or null — if adding a new medication"
+  "intent": "string — one of: medication_info, add_medication, confirm_add_medication, cancel_add_medication, time_date, find_object, confused, general",
+  "action": "string or null — only 'add_medication' when proposing to add one",
+  "medication": "object or null — { name, dosage, time, frequency } only when action is add_medication",
+  "confirmationMessage": "string or null — confirmation prompt when action is add_medication",
+  "medicationName": "string or null — legacy field for background save",
+  "medicationDose": "string or null",
+  "medicationSchedule": "string or null"
 }
 `;
 

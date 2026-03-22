@@ -4,10 +4,11 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Bell, Pill, MessageCircle, Search, HelpCircle } from "lucide-react";
+import { Pill } from "lucide-react";
 import GoldenOrb from "@/components/GoldenOrb";
 import PageWrapper from "@/components/PageWrapper";
 import { parseTimeToDate, parseTimeToMinutes } from "@/lib/time";
+import { useTimeTheme } from "@/lib/useTimeTheme";
 
 interface Med {
   id: string;
@@ -52,15 +53,6 @@ function ProgressRing({ pct }: { pct: number }) {
   );
 }
 
-// ── Quick action chips ─────────────────────────────────────────────────────────
-
-const QUICK_ACTIONS = [
-  { label: "Add Med",        icon: Pill,          href: "/meds"     },
-  { label: "Talk to Ember",  icon: MessageCircle, href: "/chat"     },
-  { label: "Find Something", icon: Search,        href: "/find"     },
-  { label: "I'm Confused",   icon: HelpCircle,    href: "/confused" },
-] as const;
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -69,13 +61,9 @@ export default function Home() {
   const [nameLoaded, setNameLoaded] = useState(false);
   const [meds, setMeds]           = useState<Med[]>([]);
 
-  const now      = new Date();
-  const h        = now.getHours();
-  const greeting =
-    h < 5  ? "Still Up"       :
-    h < 12 ? "Good Morning"   :
-    h < 17 ? "Good Afternoon" :
-             "Good Evening";
+  const { theme: timeTheme, greeting } = useTimeTheme();
+
+  const now       = new Date();
   const dateLabel = now.toLocaleDateString("en-US", {
     weekday: "long", month: "long", day: "numeric",
   });
@@ -164,29 +152,14 @@ export default function Home() {
 
           <p style={{
             fontSize: 20, fontWeight: 400, fontStyle: "italic",
-            color: "#F5EDD6",
+            color: "var(--text-primary)",
             fontFamily: "var(--font-cormorant), 'Cormorant Garamond', Georgia, serif",
             letterSpacing: "0.01em", lineHeight: 1,
           }}>
             ember
           </p>
 
-          <div style={{ position: "relative", flexShrink: 0 }}>
-            <div style={{
-              width: 40, height: 40, borderRadius: "50%",
-              background: "rgba(239,159,39,0.08)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <Bell size={18} color="#EF9F27" strokeWidth={2} />
-            </div>
-            {hasOverdue && (
-              <span style={{
-                position: "absolute", top: 5, right: 5,
-                width: 8, height: 8, borderRadius: "50%",
-                background: "#E24B4A", border: "1.5px solid #0F0E09",
-              }} />
-            )}
-          </div>
+          <div style={{ width: 40 }} />
         </motion.div>
 
         {/* ── Orb — ambient glow bleeds into background ───────────────── */}
@@ -235,7 +208,7 @@ export default function Home() {
             </svg>
           )}
 
-          <GoldenOrb size={200} intensity="medium" />
+          <GoldenOrb size={200} intensity={timeTheme.orbIntensity} />
         </motion.div>
 
         {/* ── Greeting section ────────────────────────────────────────── */}
@@ -252,7 +225,7 @@ export default function Home() {
               fontWeight: 500,
               letterSpacing: "0.18em",
               textTransform: "uppercase",
-              color: "#4A4232",
+              color: "var(--text-muted)",
               marginBottom: 10,
             }}
           >
@@ -277,7 +250,7 @@ export default function Home() {
               style={{
                 fontSize: 52,
                 fontWeight: 700,
-                color: "#F5EDD6",
+                color: "var(--text-primary)",
                 fontFamily: "var(--font-cormorant), 'Cormorant Garamond', Georgia, serif",
                 lineHeight: 1.0,
                 marginBottom: 8,
@@ -295,7 +268,7 @@ export default function Home() {
             transition={{ duration: 0.5, delay: 0.3 }}
             style={{
               fontSize: 13,
-              color: "#4A4232",
+              color: "var(--text-muted)",
               fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
               letterSpacing: "0.01em",
             }}
@@ -310,7 +283,7 @@ export default function Home() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.4, ease: "easeOut" }}
           style={{
-            background: "#1E1C0F",
+            background: "var(--card)",
             border: "1px solid rgba(239,159,39,0.15)",
             borderRadius: 24,
             boxShadow: "0 4px 32px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(239,159,39,0.08)",
@@ -338,7 +311,7 @@ export default function Home() {
               </div>
               <div style={{
                 fontSize: 13,
-                color: "#8A7A52",
+                color: "var(--text-secondary)",
                 fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
               }}>
                 of {medsTotal} taken
@@ -363,13 +336,13 @@ export default function Home() {
                 >
                   <p style={{
                     fontSize: 18, fontStyle: "italic",
-                    color: "#F5EDD6",
+                    color: "var(--text-primary)",
                     fontFamily: "var(--font-cormorant), 'Cormorant Garamond', Georgia, serif",
                     marginBottom: 4,
                   }}>
                     All done for today.
                   </p>
-                  <p style={{ fontSize: 13, color: "#8A7A52", fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
+                  <p style={{ fontSize: 13, color: "var(--text-secondary)", fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
                     Great job taking all your medications.
                   </p>
                 </motion.div>
@@ -391,14 +364,14 @@ export default function Home() {
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <p style={{
-                      fontSize: 15, fontWeight: 500, color: "#F5EDD6",
+                      fontSize: 15, fontWeight: 500, color: "var(--text-primary)",
                       fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                       marginBottom: 2,
                     }}>
                       {nextMed.name}
                     </p>
-                    <p style={{ fontSize: 12, color: "#8A7A52", fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
+                    <p style={{ fontSize: 12, color: "var(--text-secondary)", fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
                       {nextMed.schedule}{nextMed.dosage ? ` · ${nextMed.dosage}` : ""}
                     </p>
                   </div>
@@ -432,7 +405,7 @@ export default function Home() {
                 >
                   <p style={{
                     fontSize: 18, fontStyle: "italic",
-                    color: "#8A7A52",
+                    color: "var(--text-secondary)",
                     fontFamily: "var(--font-cormorant), 'Cormorant Garamond', Georgia, serif",
                     marginBottom: 12,
                   }}>
@@ -459,49 +432,25 @@ export default function Home() {
           </div>
         </motion.div>
 
-        {/* ── Quick actions row ────────────────────────────────────────── */}
-        <motion.div
-          initial={{ opacity: 0, x: 24 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.5, delay: 0.5, ease: "easeOut" }}
-          className="hide-scrollbar"
-          style={{
-            overflowX: "auto",
-            overflowY: "visible",
-            marginLeft: -24,
-            marginRight: -24,
-            paddingLeft: 24,
-            paddingRight: 24,
-            paddingBottom: 4,
-          }}
-        >
-          <div style={{ display: "flex", gap: 8, width: "max-content" }}>
-            {QUICK_ACTIONS.map(({ label, icon: Icon, href }) => (
-              <Link key={href} href={href} style={{ textDecoration: "none" }}>
-                <motion.div
-                  whileTap={{ scale: 0.95 }}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 8,
-                    background: "#1E1C0F",
-                    border: "1px solid rgba(239,159,39,0.15)",
-                    borderRadius: 30,
-                    padding: "10px 16px",
-                    boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
-                    cursor: "pointer", whiteSpace: "nowrap",
-                  }}
-                >
-                  <Icon size={16} color="#EF9F27" strokeWidth={2} />
-                  <span style={{
-                    fontSize: 13, color: "#F5EDD6",
-                    fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
-                  }}>
-                    {label}
-                  </span>
-                </motion.div>
-              </Link>
-            ))}
-          </div>
-        </motion.div>
+        {/* ── All done celebratory message ─────────────────────────── */}
+        {allDone && (
+          <motion.p
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.3 }}
+            style={{
+              textAlign: "center",
+              fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
+              fontSize: 18,
+              fontStyle: "italic",
+              fontWeight: 300,
+              color: "var(--text-muted)",
+              marginTop: 16,
+            }}
+          >
+            All done for today ✦
+          </motion.p>
+        )}
 
       </div>
     </PageWrapper>

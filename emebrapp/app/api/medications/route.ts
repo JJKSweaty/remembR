@@ -46,6 +46,32 @@ export async function GET() {
   }
 }
 
+export async function POST(req: Request) {
+  try {
+    const { name, dosage, schedule } = await req.json();
+    if (!name?.trim() || !schedule) {
+      return NextResponse.json({ error: "Name and schedule are required" }, { status: 400 });
+    }
+    const { data, error } = await supabase
+      .from("medications")
+      .insert({ name: name.trim(), dosage: dosage?.trim() || "", schedule, taken_today: false })
+      .select()
+      .single();
+    if (error) {
+      console.error("Error adding medication:", error);
+      return NextResponse.json({ error: "Failed to add" }, { status: 500 });
+    }
+    await supabase.from("memory_logs").insert({
+      event_type: "medication_added",
+      description: `Medication added: ${name.trim()}`,
+    });
+    return NextResponse.json({ medication: data });
+  } catch (error) {
+    console.error("Error in medications POST:", error);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+  }
+}
+
 export async function PATCH(req: Request) {
   try {
     const { id, taken_today } = await req.json();

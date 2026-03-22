@@ -39,8 +39,8 @@ export default function MedCard({
   const isOverdue = status === "overdue";
 
   const accentColor = isTaken ? "#4CAF82" : isOverdue ? "#BA7517" : "#EF9F27";
-  const badgeBg     = isTaken ? "#4CAF82" : isOverdue ? "#BA7517" : "#FAEEDA";
-  const badgeColor  = isTaken || isOverdue ? "white" : "#8A6A2A";
+  const badgeBg     = isTaken ? "#4CAF82" : isOverdue ? "#BA7517" : "rgba(239,159,39,0.15)";
+  const badgeColor  = isTaken || isOverdue ? "white" : "var(--text-secondary)";
   const badgeText   = isTaken ? "Taken" : isOverdue ? "Overdue" : "Upcoming";
   const iconColor   = isTaken ? "#4CAF82" : "#EF9F27";
 
@@ -52,9 +52,9 @@ export default function MedCard({
       exit={{ opacity: 0, x: 40, scale: 0.97 }}
       transition={{ duration: 0.35, delay: animationDelay }}
       style={{
-        background: isTaken ? "rgba(76,175,130,0.05)" : "#FFFDF9",
+        background: isTaken ? "rgba(76,175,130,0.05)" : "var(--card)",
         borderRadius: 18,
-        border: `1px solid ${isTaken ? "rgba(76,175,130,0.2)" : "#FAE8C0"}`,
+        border: `1px solid ${isTaken ? "rgba(76,175,130,0.2)" : "var(--card-border)"}`,
         boxShadow: "0 4px 16px rgba(186,117,23,0.07)",
         display: "flex",
         alignItems: "stretch",
@@ -80,7 +80,7 @@ export default function MedCard({
         {/* Name + dosage/schedule */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <p style={{
-            fontSize: 18, fontWeight: 700, color: "#2D1A00",
+            fontSize: 18, fontWeight: 700, color: "var(--text-primary)",
             fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif",
             marginBottom: 3,
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
@@ -89,7 +89,7 @@ export default function MedCard({
           }}>
             {name}
           </p>
-          <p style={{ fontSize: 13, color: "#8A6A2A", fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
+          <p style={{ fontSize: 13, color: "var(--text-secondary)", fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
             {dosage ? `${dosage} · ` : ""}{schedule}
           </p>
         </div>
@@ -150,8 +150,8 @@ export default function MedCard({
               onClick={() => onToggle(id, false)}
               style={{
                 background: "transparent",
-                color: "#8A6A2A",
-                border: "1px solid rgba(186,117,23,0.2)",
+                color: "var(--text-secondary)",
+                border: "1px solid rgba(239,159,39,0.2)",
                 borderRadius: 50,
                 padding: "5px 10px",
                 fontSize: 11, fontWeight: 600,

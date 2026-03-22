@@ -170,10 +170,10 @@ export default function ScanPage() {
 
   const statusColor = (status: ResultStatus) => {
     switch (status) {
-      case "match":       return { bg: "rgba(168,200,160,0.15)", border: "rgba(168,200,160,0.4)", text: "#5a8a52", icon: "✅" };
-      case "mismatch":    return { bg: "rgba(220,120,100,0.1)",  border: "rgba(220,120,100,0.3)", text: "#c85a40", icon: "⚠️" };
-      case "uncertain":   return { bg: "rgba(200,160,100,0.1)",  border: "rgba(200,160,100,0.3)", text: "#b08840", icon: "❓" };
-      case "barcode_only":return { bg: "rgba(200,200,200,0.1)",  border: "rgba(200,200,200,0.3)", text: "#666",    icon: "🔍" };
+      case "match":       return { bg: "rgba(76,175,130,0.08)",  border: "rgba(76,175,130,0.25)",  text: "#4CAF82", icon: "✅" };
+      case "mismatch":    return { bg: "rgba(226,75,74,0.08)",   border: "rgba(226,75,74,0.25)",   text: "#E24B4A", icon: "⚠️" };
+      case "uncertain":   return { bg: "rgba(239,159,39,0.08)",  border: "rgba(239,159,39,0.25)",  text: "#EF9F27", icon: "❓" };
+      case "barcode_only":return { bg: "rgba(239,159,39,0.05)",  border: "rgba(239,159,39,0.15)",  text: "var(--text-secondary)", icon: "🔍" };
     }
   };
 
@@ -183,7 +183,7 @@ export default function ScanPage() {
 
         {/* Header */}
         <div style={{ marginBottom: 24, animation: "fadeUp 0.5s ease both" }}>
-          <p style={{ fontSize: 11, color: "rgba(60,40,20,0.35)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 8 }}>
+          <p style={{ fontSize: 11, color: "var(--text-muted)", letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: 8 }}>
             Medication Check
           </p>
           <h2
@@ -192,17 +192,17 @@ export default function ScanPage() {
               fontSize: 40,
               fontWeight: 300,
               lineHeight: 1.1,
-              color: "#2a1a08",
+              color: "var(--text-primary)",
               letterSpacing: "-0.3px",
             }}
           >
             {phase === "result" && result
               ? result.status === "match"
-                ? <>This is your<br /><em style={{ color: "#5a8a52" }}>{result.medication_name}</em></>
+                ? <>This is your<br /><em style={{ color: "#4CAF82" }}>{result.medication_name}</em></>
                 : result.status === "mismatch"
-                ? <>Not in your<br /><em style={{ color: "#c85a40" }}>care plan</em></>
-                : <>Scanned<br /><em style={{ color: "#b08840" }}>barcode</em></>
-              : <>Scan your<br /><em style={{ color: "#c87840" }}>medication</em></>}
+                ? <>Not in your<br /><em style={{ color: "#E24B4A" }}>care plan</em></>
+                : <>Scanned<br /><em style={{ color: "#EF9F27" }}>barcode</em></>
+              : <>Scan your<br /><em style={{ color: "#EF9F27" }}>medication</em></>}
           </h2>
         </div>
 
@@ -215,15 +215,15 @@ export default function ScanPage() {
         {error && (
           <div
             style={{
-              background: "rgba(220,120,100,0.08)",
-              border: "1px solid rgba(220,120,100,0.2)",
+              background: "rgba(226,75,74,0.08)",
+              border: "1px solid rgba(226,75,74,0.2)",
               borderRadius: 16,
               padding: "14px 18px",
               marginBottom: 20,
               animation: "fadeUp 0.3s ease both",
             }}
           >
-            <p style={{ fontSize: 14, color: "#c85a40", margin: 0 }}>{error}</p>
+            <p style={{ fontSize: 14, color: "#E24B4A", margin: 0 }}>{error}</p>
           </div>
         )}
 
@@ -234,7 +234,7 @@ export default function ScanPage() {
               style={{
                 fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
                 fontSize: 17,
-                color: "rgba(60,40,20,0.55)",
+                color: "var(--text-secondary)",
                 fontWeight: 300,
                 textAlign: "center",
                 marginBottom: 28,
@@ -248,15 +248,15 @@ export default function ScanPage() {
               onClick={handleScan}
               style={{
                 width: "100%",
-                background: "linear-gradient(135deg, #f5c084, #c87840)",
-                color: "white",
+                background: "#EF9F27",
+                color: "#0F0E09",
                 border: "none",
                 borderRadius: 18,
                 padding: "20px",
                 fontSize: 17,
                 fontWeight: 500,
                 cursor: "pointer",
-                boxShadow: "0 8px 32px rgba(200,120,64,0.25)",
+                boxShadow: "0 8px 32px rgba(239,159,39,0.25)",
                 fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif",
                 letterSpacing: "0.02em",
                 marginBottom: 12,
@@ -277,8 +277,8 @@ export default function ScanPage() {
               onClick={handleManualEntry}
               style={{
                 width: "100%",
-                background: "rgba(255,248,236,0.8)",
-                color: "rgba(60,40,20,0.55)",
+                background: "var(--card)",
+                color: "var(--text-secondary)",
                 border: "1px solid rgba(200,160,100,0.2)",
                 borderRadius: 18,
                 padding: "16px",
@@ -299,7 +299,7 @@ export default function ScanPage() {
               style={{
                 textAlign: "center",
                 fontSize: 15,
-                color: "rgba(60,40,20,0.55)",
+                color: "var(--text-secondary)",
                 fontWeight: 300,
                 marginBottom: 6,
               }}
@@ -311,7 +311,7 @@ export default function ScanPage() {
                 style={{
                   height: "100%",
                   width: "60%",
-                  background: "linear-gradient(90deg, #f5c084, #c87840)",
+                  background: "linear-gradient(90deg, rgba(239,159,39,0.4), #EF9F27)",
                   borderRadius: 2,
                   animation: "scanPulse 1.5s ease-in-out infinite",
                 }}
@@ -322,7 +322,7 @@ export default function ScanPage() {
               style={{
                 width: "100%",
                 background: "transparent",
-                color: "rgba(60,40,20,0.5)",
+                color: "var(--text-secondary)",
                 border: "1px solid rgba(200,160,100,0.2)",
                 borderRadius: 16,
                 padding: "14px",
@@ -359,26 +359,26 @@ export default function ScanPage() {
 
                   {result.medication_name && (
                     <div style={{ marginBottom: 14 }}>
-                      <p style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 28, fontWeight: 400, color: "#2a1a08", margin: "0 0 4px" }}>
+                      <p style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 28, fontWeight: 400, color: "var(--text-primary)", margin: "0 0 4px" }}>
                         {result.medication_name}
                       </p>
                       {result.dosage && (
-                        <p style={{ fontSize: 14, color: "rgba(60,40,20,0.5)", margin: 0 }}>
+                        <p style={{ fontSize: 14, color: "var(--text-secondary)", margin: 0 }}>
                           {result.dosage} · {result.plan_slot || ""}
                         </p>
                       )}
                     </div>
                   )}
 
-                  <p style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 17, fontWeight: 300, color: "#2a1a08", lineHeight: 1.6, margin: 0 }}>
+                  <p style={{ fontFamily: "var(--font-cormorant), 'Cormorant Garamond', serif", fontSize: 17, fontWeight: 300, color: "var(--text-primary)", lineHeight: 1.6, margin: 0 }}>
                     {result.message}
                   </p>
                 </div>
               );
             })()}
 
-            <div style={{ background: "rgba(255,248,236,0.6)", border: "1px solid rgba(200,160,100,0.1)", borderRadius: 14, padding: "12px 16px", marginBottom: 16 }}>
-              <p style={{ fontSize: 12, color: "rgba(60,40,20,0.4)", margin: 0, lineHeight: 1.5 }}>
+            <div style={{ background: "var(--surface)", border: "1px solid rgba(200,160,100,0.1)", borderRadius: 14, padding: "12px 16px", marginBottom: 16 }}>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", margin: 0, lineHeight: 1.5 }}>
                 ⚕️ {result.safety_notice}
               </p>
             </div>
@@ -388,15 +388,15 @@ export default function ScanPage() {
                 onClick={() => { if (result.message) speak(result.message); }}
                 style={{
                   flex: 2,
-                  background: "linear-gradient(135deg, #f5c084, #c87840)",
-                  color: "white",
+                  background: "#EF9F27",
+                  color: "#0F0E09",
                   border: "none",
                   borderRadius: 16,
                   padding: "16px",
                   fontSize: 14,
                   fontWeight: 500,
                   cursor: "pointer",
-                  boxShadow: "0 6px 24px rgba(200,120,64,0.28)",
+                  boxShadow: "0 6px 24px rgba(239,159,39,0.28)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
@@ -410,7 +410,7 @@ export default function ScanPage() {
                 style={{
                   flex: 1,
                   background: "transparent",
-                  color: "rgba(60,40,20,0.5)",
+                  color: "var(--text-secondary)",
                   border: "1px solid rgba(200,160,100,0.2)",
                   borderRadius: 16,
                   padding: "16px",

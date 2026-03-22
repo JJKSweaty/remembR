@@ -42,14 +42,16 @@
   -moz-user-select: none;
   -ms-user-select: none;
   user-select: none;
+  transition: background-color 2s ease, color 1s ease, border-color 1s ease;
 }
 
 body {
   font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
-  background: #0F0E09;
+  background: var(--background, #0F0E09);
   min-height: 100vh;
   min-height: 100svh;
-  color: var(--text-primary);
+  color: var(--text-primary, #F5EDD6);
+  transition: background-color 2s ease, color 1s ease;
 }
 
 /* EmberOrb glow pulse — CSS only as specified */
@@ -141,4 +143,8 @@ body {
 @keyframes shimmer {
   0%, 100% { opacity: 0.4; }
   50%       { opacity: 0.8; }
+}
+@keyframes cardPulse {
+  0%, 100% { box-shadow: 0 0 16px rgba(239,159,39,0.15); }
+  50%       { box-shadow: 0 0 28px rgba(239,159,39,0.35); }
 }
